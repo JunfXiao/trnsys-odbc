@@ -1,0 +1,24 @@
+[package]
+name = "trnsys_rust_template"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[package.metadata.trnsys]
+type_number = 256
+
+[lib]
+name = "trnsys_rust_template"
+path = "src/lib.rs"
+edition = "2021"
+crate-type= ["cdylib"]
+
+
+[dependencies]
+tracing = "0.1.26"
+tracing-subscriber = { version = "0.3.19", features = ["serde", "tracing-serde", "env-filter", "time", "local-time"] }
+thiserror = "2.0.4"
+
+
+[build-dependencies]
+toml = "0.8"
