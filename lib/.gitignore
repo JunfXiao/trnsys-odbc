@@ -1,0 +1,3 @@
+
+# Exclude TRNDll64.lib due to copyright issues
+TRNDll64.lib
