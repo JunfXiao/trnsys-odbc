@@ -63,8 +63,8 @@ pub fn found_bad_input(mut input: i32, severity: Severity, message: &str) {
             input as *mut c_int,
             severity.as_ptr() as *mut c_char,
             message.as_ptr() as *mut c_char,
-            severity.as_bytes_with_nul().len(),
-            message.as_bytes_with_nul().len(),
+            severity.as_bytes().len(),
+            message.as_bytes().len(),
         );
     }
 }
@@ -89,12 +89,12 @@ pub fn found_bad_parameter(mut param: i32, severity: Severity, message: &str) {
         let severity = severity.as_cstring();
 
         let severity_ptr = severity.as_ptr() as *mut c_char;
-        let severity_len = severity.as_bytes_with_nul().len();
+        let severity_len = severity.as_bytes().len();
 
         let message = CString::new(message).expect("Failed to create CString");
 
         let message_ptr = message.as_ptr() as *mut c_char;
-        let message_len = message.as_bytes_with_nul().len();
+        let message_len = message.as_bytes().len();
 
         info!(
             "Param ptr: {:p}, Severity ptr: {:p}, Message ptr: {:p}",
@@ -121,9 +121,9 @@ pub fn init_report_integral(index: &mut i32, int_name: &str, inst_unit: &str, in
             cstr_int_name.as_ptr() as *mut c_char,
             cstr_inst_unit.as_ptr() as *mut c_char,
             cstr_int_unit.as_ptr() as *mut c_char,
-            cstr_int_name.as_bytes_with_nul().len(),
-            cstr_inst_unit.as_bytes_with_nul().len(),
-            cstr_int_unit.as_bytes_with_nul().len(),
+            cstr_int_name.as_bytes().len(),
+            cstr_inst_unit.as_bytes().len(),
+            cstr_int_unit.as_bytes().len(),
         );
     }
 }
@@ -136,8 +136,8 @@ pub fn init_report_min_max(index: &mut i32, minmax_name: &str, minmax_unit: &str
             index,
             cstr_minmax_name.as_ptr() as *mut c_char,
             cstr_minmax_unit.as_ptr() as *mut c_char,
-            cstr_minmax_name.as_bytes_with_nul().len(),
-            cstr_minmax_unit.as_bytes_with_nul().len(),
+            cstr_minmax_name.as_bytes().len(),
+            cstr_minmax_unit.as_bytes().len(),
         );
     }
 }
@@ -150,8 +150,8 @@ pub fn init_report_text(index: &mut i32, txt_name: &str, txt_val: &str) {
             index,
             cstr_txt_name.as_ptr() as *mut c_char,
             cstr_txt_val.as_ptr() as *mut c_char,
-            cstr_txt_name.as_bytes_with_nul().len(),
-            cstr_txt_val.as_bytes_with_nul().len(),
+            cstr_txt_name.as_bytes().len(),
+            cstr_txt_val.as_bytes().len(),
         );
     }
 }
@@ -276,9 +276,12 @@ pub fn get_current_unit() -> i32 {
 }
 
 pub fn get_deck_filename() -> String {
-    let mut buffer = [0 as c_char; 256];
+    let mut buffer = vec![0 as c_char; get_max_path_length() as usize];
     unsafe {
-        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETDECKFILENAME(buffer.as_mut_ptr(), buffer.len());
+        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETDECKFILENAME(
+            buffer.as_mut_slice().as_mut_ptr(),
+            buffer.len(),
+        );
         CStr::from_ptr(ptr).to_string_lossy().into_owned()
     }
 }
@@ -291,13 +294,18 @@ pub fn get_format(label: &mut [u8], iunit: &mut i32, no: &mut i32) -> String {
     if label.len() > 256 {
         panic!("The label length must be less than 256 bytes");
     }
-    let mut buffer = [0 as c_char; 256];
+    let mut buffer = vec![0 as c_char; get_max_path_length() as usize];
     // write the label to the buffer
     for (i, &byte) in label.iter().enumerate() {
         buffer[i] = byte as c_char;
     }
     unsafe {
-        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETFORMAT(buffer.as_mut_ptr(), buffer.len(), iunit, no);
+        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETFORMAT(
+            buffer.as_mut_slice().as_mut_ptr(),
+            buffer.len(),
+            iunit,
+            no,
+        );
         CStr::from_ptr(ptr).to_string_lossy().into_owned()
     }
 }
@@ -336,20 +344,31 @@ pub fn is_version_signing_time() -> bool {
     unsafe { c_bool(ext_c::TRNSYSFUNCTIONS_mp_GETISVERSIONSIGNINGTIME()) }
 }
 
-pub fn get_label(iunit: &mut i32, no: &mut i32) -> String {
-    let mut buffer = [0 as c_char; 256];
+pub fn get_label(mut iunit: i32, mut no: i32) -> String {
+    let mut buffer = vec![0 as c_char; get_max_label_length() as usize];
     unsafe {
-        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETLABEL(buffer.as_mut_ptr(), buffer.len(), iunit, no);
-        CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETLABEL(
+            buffer.as_mut_slice().as_mut_ptr(),
+            buffer.capacity(),
+            &mut iunit as *mut c_int,
+            &mut no as *mut c_int,
+        );
+        CStr::from_ptr(buffer.as_ptr())
+            .to_string_lossy()
+            .trim()
+            .to_string()
     }
 }
 
 pub fn get_lu_filename(mut lu: i32) -> String {
-    let mut buffer = [0 as c_char; 256];
+    let mut buffer = vec![0 as c_char; get_max_path_length() as usize];
     unsafe {
-        let ptr =
-            ext_c::TRNSYSFUNCTIONS_mp_GETLUFILENAME(buffer.as_mut_ptr(), buffer.len(), &mut lu);
-        CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETLUFILENAME(
+            buffer.as_mut_slice().as_mut_ptr(),
+            buffer.len(),
+            &mut lu,
+        );
+        CStr::from_ptr(ptr).to_string_lossy().trim().to_string()
     }
 }
 
@@ -381,9 +400,8 @@ pub fn get_number_of_inputs() -> i32 {
     unsafe { ext_c::TRNSYSFUNCTIONS_mp_GETNUMBEROFINPUTS() }
 }
 
-pub fn get_number_of_labels() -> i32 {
-    let mut i = 0;
-    unsafe { ext_c::TRNSYSFUNCTIONS_mp_GETNUMBEROFLABELS(&mut i) }
+pub fn get_number_of_labels(mut unit_number: i32) -> i32 {
+    unsafe { ext_c::TRNSYSFUNCTIONS_mp_GETNUMBEROFLABELS(&mut unit_number as *mut c_int) }
 }
 
 pub fn get_number_of_outputs() -> i32 {
@@ -435,18 +453,23 @@ pub fn get_timestep_iteration() -> i32 {
 }
 
 pub fn get_trnsys_input_file_dir() -> String {
-    let mut buffer = [0 as c_char; 256];
+    let mut buffer = vec![0 as c_char; get_max_path_length() as usize];
     unsafe {
-        let ptr =
-            ext_c::TRNSYSFUNCTIONS_mp_GETTRNSYSINPUTFILEDIR(buffer.as_mut_ptr(), buffer.len());
+        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETTRNSYSINPUTFILEDIR(
+            buffer.as_mut_slice().as_mut_ptr(),
+            buffer.len(),
+        );
         CStr::from_ptr(ptr).to_string_lossy().into_owned()
     }
 }
 
 pub fn get_trnsys_root_dir() -> String {
-    let mut buffer = [0 as c_char; 256];
+    let mut buffer = vec![0 as c_char; get_max_path_length() as usize];
     unsafe {
-        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETTRNSYSROOTDIR(buffer.as_mut_ptr(), buffer.len());
+        let ptr = ext_c::TRNSYSFUNCTIONS_mp_GETTRNSYSROOTDIR(
+            buffer.as_mut_slice().as_mut_ptr(),
+            buffer.len(),
+        );
         CStr::from_ptr(ptr).to_string_lossy().into_owned()
     }
 }

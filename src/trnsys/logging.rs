@@ -20,7 +20,7 @@ use tracing_subscriber::{
 };
 
 /// The threshold level for trnsys logging.
-const TRNSYS_LOG_LEVEL: Level = Level::WARN;
+const TRNSYS_LOG_LEVEL: Level = Level::INFO;
 
 /// Custom function to handle trnsys logging.
 ///
@@ -109,7 +109,7 @@ impl<S: Subscriber> Layer<S> for TrnSysLogLayer {
     /// * `_ctx` - The context of the subscriber.
     fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
         let metadata = event.metadata();
-        if metadata.level() >= &self.threshold {
+        if metadata.level() <= &self.threshold {
             let mut str = String::new();
             let mut writer = tracing_subscriber::fmt::format::Writer::new(&mut str);
 
@@ -201,7 +201,7 @@ pub fn init_tracing(file_name: Option<String>) {
     let local_time = OffsetTime::local_rfc_3339().expect("Failed to get local time offset");
 
     // Set up the filter (can be controlled via the RUST_LOG environment variable)
-    let filter = EnvFilter::from_default_env().add_directive("info".parse().unwrap());
+    let filter = EnvFilter::from_default_env().add_directive("debug".parse().unwrap());
 
     // Formatting Layer: output to both file and stdout
     let fmt_layer = fmt::layer()
@@ -217,8 +217,8 @@ pub fn init_tracing(file_name: Option<String>) {
     // Combine layers
     let subscriber = Registry::default()
         .with(filter)
-        .with(fmt_layer)
-        .with(trnsys_log_layer);
+        .with(trnsys_log_layer)
+        .with(fmt_layer);
 
     // Global initialization
     tracing::subscriber::set_global_default(subscriber)
