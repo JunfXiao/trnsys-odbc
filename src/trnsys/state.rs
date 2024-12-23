@@ -1,12 +1,16 @@
 use crate::storage::StoreProvider;
 use crate::trnsys::iteration_mode::IterationMode;
 use crate::trnsys::param::TrnSysValue;
-use crate::trnsys::{get_input_value, get_output_value, get_parameter_value};
+use crate::trnsys::{
+    get_current_unit, get_input_value, get_label, get_output_value, get_parameter_value,
+};
 
 pub(crate) struct TrnSysState<D = (), S = ()> {
     pub(crate) trnsys_standard_version: i32,
     pub(crate) num_params: i32,
     pub(crate) params: Vec<TrnSysValue>,
+    pub(crate) num_labels: i32,
+    pub(crate) labels: Vec<String>,
     pub(crate) num_inputs: i32,
     pub(crate) inputs: Vec<TrnSysValue>,
     pub(crate) num_derivatives: i32,
@@ -32,6 +36,9 @@ impl TrnSysState {
             num_params: 0,
             params: vec![],
 
+            num_labels: 0,
+            labels: vec![],
+
             num_inputs: 0,
             inputs: vec![],
 
@@ -53,6 +60,10 @@ impl TrnSysState {
             .map(|i| TrnSysValue {
                 value: get_parameter_value(i),
             })
+            .collect();
+
+        self.labels = (1..self.num_labels + 1)
+            .map(|i| get_label(get_current_unit(), i))
             .collect();
     }
 

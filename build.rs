@@ -52,6 +52,12 @@ fn main() {
     } else {
         panic!("Cannot find type number in `Cargo.toml`. Please add it before building.")
     }
+
+    // Windows resource file
+    if cfg!(target_os = "windows") {
+        let res = winres::WindowsResource::new();
+        res.compile().unwrap();
+    }
 }
 
 /// Watch the TRNDll64.lib file and rebuild if it changes
