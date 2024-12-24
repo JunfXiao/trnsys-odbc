@@ -1,6 +1,6 @@
 # trnsys-odbc
 
-Store TrnSys Simulation Results in ODBC Databases.
+Store TrnSys Simulation Results in MS Excel, SQLite and more ODBC Databases.
 
 ## Supported Databases
 
