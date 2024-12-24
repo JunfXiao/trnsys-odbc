@@ -1,4 +1,43 @@
 use odbc_api::DataType;
+use std::hash::{Hash, Hasher};
+
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub enum ColDataType {
+    Text,
+    Number { decimal: bool },
+    DateTime,
+}
+
+#[derive(Eq, Debug, Clone)]
+pub struct ColDef {
+    pub name: String,
+    pub data_type: ColDataType,
+    pub not_null: bool,
+    pub primary_key: bool,
+}
+
+impl PartialEq for ColDef {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Hash for ColDef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl ColDef {
+    pub fn new(name: &str, data_type: ColDataType, not_null: bool, primary_key: bool) -> Self {
+        ColDef {
+            name: name.to_string(),
+            data_type,
+            not_null,
+            primary_key,
+        }
+    }
+}
 
 pub(crate) trait DataTypeQuery {
     fn is_text_like(&self) -> bool;

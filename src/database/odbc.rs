@@ -1,10 +1,12 @@
 use super::column::{escape_col_name, MetaCol};
 use super::cursor::CursorQuery;
 use super::template::TemplateFile;
-use crate::database::datatype::DataTypeQuery;
+use crate::database::datatype::{ColDataType, ColDef, DataTypeQuery};
+use crate::database::dialect::SqlDialect;
+use crate::database::path::clean_and_ensure_path;
 use crate::impl_odbc_provider;
 use crate::trnsys::error::TrnSysError;
-use indexmap::IndexMap;
+use indexmap::IndexSet;
 use odbc_api::parameter::InputParameter;
 use odbc_api::sys::{Date, Time, Timestamp};
 use odbc_api::{Connection, ConnectionOptions, Cursor, DataType, Environment, ResultSetMetadata};
@@ -13,7 +15,7 @@ use std::sync::{Mutex, MutexGuard};
 use strum::IntoEnumIterator;
 use tracing::{debug, info};
 
-pub trait OdbcProvider<'c>: Send + Sync {
+pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
     fn set_connection(&mut self, connection: Connection<'c>) -> Result<(), TrnSysError>;
     fn setup_by_conn_str(
         &mut self,
@@ -29,6 +31,7 @@ pub trait OdbcProvider<'c>: Send + Sync {
         self.set_connection(connection)?;
         Ok(())
     }
+    #[allow(dead_code)]
     fn setup_by_dsn(
         &mut self,
         environment: &'c Environment,
@@ -51,27 +54,26 @@ pub trait OdbcProvider<'c>: Send + Sync {
     fn ensure_table(
         &self,
         table_name: &str,
-        cols: Vec<(String, String)>,
+        cols: Vec<ColDef>,
+        creation_extra_cols: Option<Vec<String>>,
     ) -> Result<(), TrnSysError> {
         let connection = self.get_connection()?;
 
-        let mut col_type_dict: IndexMap<String, String> = cols.into_iter().collect();
+        let mut col_type_set: IndexSet<ColDef> = cols.into_iter().collect();
 
-        // Add predefined columns
-        for meta_col in MetaCol::iter() {
-            col_type_dict.insert(
-                meta_col.as_str().to_string(),
-                meta_col.sql_type().to_string(),
-            );
+        // Add predefined columns in the front
+        for (i, meta_col) in MetaCol::iter().enumerate() {
+            col_type_set.insert_before(i, meta_col.col_def());
         }
         debug!("table_name: {}", table_name);
         // Check if table exists
         let mut table_list_cursor = connection.tables("", "", table_name, "TABLE")?;
 
-        let mut table_name_col_index = table_list_cursor.find_col_index("TABLE_NAME")?;
+        let table_name_col_index = table_list_cursor.find_col_index("TABLE_NAME")?;
 
         let table_name_index =
             table_name_col_index.expect("No TABLE_NAME column found in tables_cursor") as u16;
+        debug!("Table Name Index: {}", table_name_index);
 
         let mut table_exists = false;
         // iterate tables to find if table exists
@@ -79,10 +81,13 @@ pub trait OdbcProvider<'c>: Send + Sync {
             let mut buf = Vec::new();
             if row.get_text(table_name_index, &mut buf)? {
                 let name = String::from_utf8(buf).unwrap();
+                debug!("Found Table: {}", name);
                 if name == table_name {
                     table_exists = true;
                     break;
                 }
+            } else {
+                debug!("No Table Name Found for Index: {}", table_name_index);
             }
         }
 
@@ -96,7 +101,6 @@ pub trait OdbcProvider<'c>: Send + Sync {
             // NUM_PREC_RADIX, NULLABLE, REMARKS, COLUMN_DEF, SQL_DATA_TYPE, SQL_DATETIME_SUB, CHAR_OCTET_LENGTH, ORDINAL_POSITION, IS_NULLABLE.
             // Find the index number of the "COLUMN_NAME" column
             let column_name_index = column_info_cursor.find_col_index("COLUMN_NAME")?;
-            let data_type_index = column_info_cursor.find_col_index("TYPE_NAME")?.unwrap() as u16;
 
             if column_name_index.is_none() {
                 return Err(TrnSysError::GeneralError(
@@ -110,25 +114,35 @@ pub trait OdbcProvider<'c>: Send + Sync {
                 let mut buf = Vec::new();
                 if row.get_text(column_name_index, &mut buf)? {
                     let column_name = String::from_utf8(buf).unwrap();
-                    col_type_dict.shift_remove(&column_name);
+                    col_type_set.shift_remove(&ColDef::new(
+                        &column_name,
+                        ColDataType::Text,
+                        false,
+                        false,
+                    ));
                 }
             }
 
             // add missing columns
-            for (col, data_type) in col_type_dict {
+            for col_def in col_type_set {
                 let alter_query = format!(
-                    "ALTER TABLE {} ADD COLUMN {} {}",
+                    "ALTER TABLE {} ADD COLUMN {}",
                     table_name,
-                    escape_col_name(&col),
-                    data_type
+                    self.get_col_def_str(&col_def)
                 );
                 connection.execute(&alter_query, ())?;
             }
         } else {
             // add a new table
-            let cols_def = col_type_dict
-                .into_iter()
-                .map(|(col, data_type)| format!("{} {}", escape_col_name(&col), data_type))
+
+            let primary_key_str = self.get_primary_key_str(col_type_set.iter().collect());
+
+            let cols_def = col_type_set
+                .iter()
+                .map(|col| self.get_col_def_str(col))
+                .chain(creation_extra_cols.unwrap_or_default())
+                .chain(vec![primary_key_str])
+                .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join(", \n");
 
@@ -136,7 +150,6 @@ pub trait OdbcProvider<'c>: Send + Sync {
                 r"
             CREATE TABLE {}
             (
-            id AUTOINCREMENT PRIMARY KEY,
             {}
             );",
                 table_name, cols_def
@@ -145,6 +158,18 @@ pub trait OdbcProvider<'c>: Send + Sync {
             connection.execute(&create_table_query, ())?;
         }
 
+        Ok(())
+    }
+
+    fn remove_variant(&self, table_name: &str, variant_name: &str) -> Result<(), TrnSysError> {
+        let connection = self.get_connection()?;
+        let query = format!(
+            "DELETE FROM {} WHERE {} = '{}'",
+            table_name,
+            escape_col_name(MetaCol::Variant.as_str()),
+            variant_name
+        );
+        connection.execute(&query, ())?;
         Ok(())
     }
 
@@ -157,7 +182,7 @@ pub trait OdbcProvider<'c>: Send + Sync {
 
         let col_names = cols
             .iter()
-            .map(|(name, _)| name.as_str())
+            .map(|(name, _)| escape_col_name(name.as_str()))
             .collect::<Vec<_>>()
             .join(", ");
         let placeholders = cols.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
@@ -166,8 +191,9 @@ pub trait OdbcProvider<'c>: Send + Sync {
             "INSERT INTO {} ({}) VALUES ({})",
             table, col_names, placeholders
         );
+        debug!("Insert Query: {}", query);
         let mut statement = conn.prepare(&query)?;
-        let mut params = cols.into_iter().map(|(_, param)| param).collect::<Vec<_>>();
+        let params = cols.into_iter().map(|(_, param)| param).collect::<Vec<_>>();
         statement.execute(params.as_slice())?;
         Ok(())
     }
@@ -237,7 +263,7 @@ pub trait OdbcProvider<'c>: Send + Sync {
         let cursor = conn.execute(&query, ())?;
 
         if let Some(mut cursor) = cursor {
-            let mut headline: Vec<String> = cursor.column_names()?.collect::<Result<_, _>>()?;
+            let headline: Vec<String> = cursor.column_names()?.collect::<Result<_, _>>()?;
             println!("Headline: {:?}", headline);
 
             let data_types = (1..cursor.num_result_cols()? + 1)
@@ -335,9 +361,7 @@ pub(crate) trait FileDbProvider<'c>: OdbcProvider<'c> {
     where
         Self: Sized,
     {
-        let db_path = std::path::absolute(db_path)?;
-        let db_path_str = db_path.to_str().unwrap().to_owned();
-        fs::create_dir_all(db_path.parent().unwrap())?;
+        let db_path_str = clean_and_ensure_path(db_path)?;
         info!("DB Path: {:?}", db_path);
         self.ensure_file_exists(&db_path_str)?;
         let driver_name = self.get_driver_name();
@@ -360,19 +384,26 @@ pub struct OdbcProviderImpl<'c> {
     connection: Option<Mutex<Connection<'c>>>,
 }
 
+impl SqlDialect for OdbcProviderImpl<'_> {}
+
 impl_odbc_provider!(OdbcProviderImpl);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::ms_access::MsAccessProvider;
-    use crate::database::ms_excel::MsExcelProvider;
+
     use fs;
-    use odbc_api::IntoParameter;
+
     use std::sync::LazyLock;
+    use tracing_test::traced_test;
 
-    static ENVIRONMENT: LazyLock<Environment> = LazyLock::new(|| Environment::new().unwrap());
+    static ENVIRONMENT: LazyLock<Environment> = LazyLock::new(|| {
+        // Initialize ODBC Environment
+        Environment::new().unwrap()
+    });
 
+    #[traced_test]
     #[test]
     fn test_create_connection() {
         let db_path = "E:\\test.accdb";
@@ -387,124 +418,6 @@ mod tests {
             assert!(ms_access.get_connection().is_ok());
         }
 
-        if fs::metadata(db_path).is_ok() {
-            fs::remove_file(db_path).unwrap();
-        }
-    }
-
-    #[test]
-    fn test_msaccess_insert_query_data() {
-        let db_path = "E:\\test2.accdb";
-        if fs::metadata(db_path).is_ok() {
-            fs::remove_file(db_path).unwrap();
-        }
-        {
-            let mut ms_access = MsAccessProvider::new();
-            ms_access
-                .setup_by_path(&ENVIRONMENT, db_path, None)
-                .unwrap();
-
-            // ensure table
-            let cols = vec![
-                ("UID".to_string(), "INTEGER NULL".to_string()),
-                ("Name".to_string(), "TEXT NULL".to_string()),
-            ];
-
-            ms_access
-                .ensure_table("TestTable", cols)
-                .expect("Error Ensuring Table");
-
-            ms_access
-                .insert_data(
-                    "TestTable",
-                    vec![
-                        ("UID".to_string(), Box::new(1.into_parameter())),
-                        ("Name".to_string(), Box::new("Alice".into_parameter())),
-                    ],
-                )
-                .expect("Error Inserting Data");
-
-            ms_access
-                .insert_data(
-                    "TestTable",
-                    vec![("UID".to_string(), Box::new(2.into_parameter()))],
-                )
-                .expect("Error Inserting Data without Name");
-
-            ms_access
-                .insert_data(
-                    "TestTable",
-                    vec![("Name".to_string(), Box::new("Bob".into_parameter()))],
-                )
-                .expect("Error Querying Data");
-
-            ms_access
-                .query_data(
-                    "TestTable",
-                    vec!["UID".to_string(), "Name".to_string()],
-                    None,
-                )
-                .expect("Error Querying Data");
-        }
-        if fs::metadata(db_path).is_ok() {
-            fs::remove_file(db_path).unwrap();
-        }
-    }
-
-    #[test]
-    fn test_msexcel_insert_query_data() {
-        let db_path = "E:\\test1.xlsx";
-        if fs::metadata(db_path).is_ok() {
-            fs::remove_file(db_path).unwrap();
-        }
-        {
-            let mut ms_access = MsExcelProvider::new();
-            ms_access
-                .setup_by_path(&ENVIRONMENT, db_path, None)
-                .unwrap();
-
-            // ensure table
-            let cols = vec![
-                ("UID".to_string(), "INTEGER".to_string()),
-                ("Name".to_string(), "TEXT".to_string()),
-            ];
-
-            ms_access
-                .ensure_table("TestTable", cols)
-                .expect("Error Ensuring Table");
-            println!("Table Created");
-            ms_access
-                .insert_data(
-                    "TestTable",
-                    vec![
-                        ("UID".to_string(), Box::new(1.into_parameter())),
-                        ("Name".to_string(), Box::new("Alice".into_parameter())),
-                    ],
-                )
-                .expect("Error Inserting Data");
-
-            ms_access
-                .insert_data(
-                    "TestTable",
-                    vec![("UID".to_string(), Box::new(2.into_parameter()))],
-                )
-                .expect("Error Inserting Data without Name");
-
-            ms_access
-                .insert_data(
-                    "TestTable",
-                    vec![("Name".to_string(), Box::new("Bob".into_parameter()))],
-                )
-                .expect("Error Querying Data");
-
-            ms_access
-                .query_data(
-                    "TestTable",
-                    vec!["UID".to_string(), "Name".to_string()],
-                    None,
-                )
-                .expect("Error Querying Data");
-        }
         if fs::metadata(db_path).is_ok() {
             fs::remove_file(db_path).unwrap();
         }

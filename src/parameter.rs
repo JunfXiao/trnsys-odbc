@@ -1,3 +1,4 @@
+use crate::database::column::MetaCol;
 use crate::trnsys::error::{InputError, TrnSysError};
 use crate::trnsys::TrnSysState;
 use tracing::info;
@@ -36,6 +37,8 @@ pub struct Parameters {
     pub connection_string: String,
     pub table_name: String,
     pub input_names: Vec<String>,
+    pub variant_name: String,
+    pub primary_keys: Vec<MetaCol>,
 }
 
 impl TryFrom<&TrnSysState> for Parameters {
@@ -55,11 +58,11 @@ impl TryFrom<&TrnSysState> for Parameters {
         let num_inputs = i32::try_from(&value[2])?;
 
         // Get string from labels
-        if state.num_labels != 3 {
+        if state.num_labels != 4 {
             return Err(InputError::BadParameter {
                 index: 2,
                 message: format!(
-                    "Exact 3 labels must be given. Given {} labels.",
+                    "Exact 4 labels must be given. Given {} labels.",
                     state.num_labels
                 ),
             }
@@ -69,9 +72,6 @@ impl TryFrom<&TrnSysState> for Parameters {
         let connection_string = state.labels[0].clone();
 
         let table_name = state.labels[1].clone();
-
-        info!("Connection String: '{}'", connection_string);
-        info!("Table Name: '{}'", table_name);
 
         let input_names: Vec<String> = state.labels[2]
             .split(",")
@@ -85,13 +85,21 @@ impl TryFrom<&TrnSysState> for Parameters {
             }.into());
         }
 
-        Ok(Parameters {
+        let variant_name = state.labels[3].clone();
+
+        let parameters = Parameters {
             print_interval,
             driver_mode,
-            table_name,
-            connection_string,
             num_inputs,
+            connection_string,
+            table_name,
             input_names,
-        })
+            variant_name,
+            primary_keys: vec![MetaCol::SimulationTime, MetaCol::Variant],
+        };
+
+        info!("Parameters: {:?}", parameters);
+
+        Ok(parameters)
     }
 }

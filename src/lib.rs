@@ -53,7 +53,7 @@ pub extern "C" fn entrance() {
         Ok(_) => {}
         Err(e) => {
             e.handle_in_trnsys(state.deref_mut());
-            error!("{:?}", e);
+            error!("{:#}", e);
         }
     }
 }

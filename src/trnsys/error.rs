@@ -10,14 +10,20 @@ pub trait TrnSysErrorHandler {
 pub enum TrnSysError {
     #[error("Error in TrnSys Type: {0}")]
     GeneralError(String),
-    #[error("Error in TrnSys: {0}")]
+    #[error("Error in TrnSys: {0:#}")]
     InputError(#[from] InputError),
     #[error("Cannot convert {param}: {message}")]
     ConversionError { param: String, message: String },
-    #[error("Error in ODBC: {0}")]
-    OdbcError(#[from] odbc_api::Error),
-    #[error("File System Error: {0}")]
-    FileSystemError(#[from] std::io::Error),
+    #[error("Error in ODBC: {source:#}")]
+    OdbcError {
+        #[from]
+        source: odbc_api::Error,
+    },
+    #[error("File System Error: {source:#}")]
+    FileSystemError {
+        #[from]
+        source: std::io::Error,
+    },
 }
 
 impl TrnSysErrorHandler for TrnSysError {
