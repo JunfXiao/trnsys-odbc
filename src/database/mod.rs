@@ -56,6 +56,7 @@ mod tests {
     use crate::database::ms_excel::MsExcelProvider;
     use crate::database::odbc::FileDbProvider;
     use crate::database::path::clean_and_ensure_path;
+    use crate::database::sqlite::SqliteProvider;
     use odbc_api::{Environment, IntoParameter};
     use std::fs;
     use std::sync::LazyLock;
@@ -158,6 +159,26 @@ mod tests {
 
         {
             let mut provider = MsExcelProvider::new();
+            provider.setup_by_path(&ENVIRONMENT, db_path, None).unwrap();
+
+            test_db(&mut provider);
+        }
+        if fs::metadata(db_path).is_ok() {
+            fs::remove_file(db_path).unwrap();
+        }
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_sqlite() {
+        let path = clean_and_ensure_path("test.db").unwrap();
+        let db_path = &path;
+        if fs::metadata(db_path).is_ok() {
+            fs::remove_file(db_path).unwrap();
+        }
+
+        {
+            let mut provider = SqliteProvider::new();
             provider.setup_by_path(&ENVIRONMENT, db_path, None).unwrap();
 
             test_db(&mut provider);
