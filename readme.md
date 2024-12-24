@@ -32,18 +32,34 @@ Install the ODBC driver for the database you want to connect to.
 | 2  | `DriverMode`     | Integer between 1 and 4. Driver Mode determines how to write the data to the database. <br> MsAccessFile = 1, <br> MsExcelFile = 2, <br> SqliteFile = 3, <br> ODBC Connection String = 4 | 1       |
 | 3  | `NumberOfInputs` | Number of inputs connected to this component.                                                                                                                                      | 3       |
 
+### Initial Inputs
+
+Initial inputs are used as column names in the database. Names of the inputs are separated by a space or new line. The
+number of labels should equal the number of inputs connected to this component.
+
+Example:
+
+`IN1 "IN 2" IN_3`
+
+or
+
+```
+IN1
+"IN 2"
+IN_3
+```
+
 ### Special Cards / Labels
 
 All the answers to the cards should be wrapped in double quotes. For example, if the answer is `My Database`, then it
 should be written as `"My Database"`.
 
-| No | Name               | Description                                                                                                                                                                                 |
-|----|--------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 1  | `Labels`           | Please do not edit this. This is used to store the number of labels.                                                                                                                        |
-| 2  | `ConnectionString` | If `DriverMode` is 4, then this card is used to store the connection string. If the file-based database is used (mode 1-3), then the connection string should be the path to the file.          |
-| 3  | `TableName`        | Name of the table to write the data.                                                                                                                                                        |
-| 4  | `Input Names`      | Names of the inputs connected to this component, separated by a comma. The number of labels should equal the number of inputs connected to this component. Example: `"IN1, IN 2, IN_3"` |
-| 5  | `Variant Name`     | Name of the variant to write the data. At the beginning of the simulation, **all data** with the same variant name will be **deleted** from the table.                                      |
+| No | Name               | Description                                                                                                                                                                            |
+|----|--------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1  | `Labels`           | Please do not edit this. This is used to store the number of labels.                                                                                                                   |
+| 2  | `ConnectionString` | If `DriverMode` is 4, then this card is used to store the connection string. If the file-based database is used (mode 1-3), then the connection string should be the path to the file. |
+| 3  | `TableName`        | Name of the table to write the data.                                                                                                                                                   |
+| 4  | `Variant Name`     | Name of the variant to write the data. At the beginning of the simulation, **all data** with the same variant name will be **deleted** from the table.                                 |
 
 ## Example Deck File
 
@@ -66,12 +82,15 @@ INPUTS 3
 0,0		! [unconnected]
 0,0		! [unconnected]
 *** INITIAL INPUT VALUES
-0 0 0 
-LABELS 4
+0 0 0
+
+*** 6 Labels (3 fixed + 3 inputs)
+LABELS 6
 "result.xlsx"
 "SimulationResult"
-"col1, some col2, another col3"
 "Variant1"
+*** Column Names
+col1 "some col2" "another col3"
 *------------------------------------------------------------------------------
 ```
 

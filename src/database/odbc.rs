@@ -26,6 +26,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
     where
         Self: Sized,
     {
+        debug!("Connection String: {}", conn_str);
         let connection = environment
             .connect_with_connection_string(conn_str, conn_options.unwrap_or_default())?;
         self.set_connection(connection)?;
@@ -362,19 +363,21 @@ pub(crate) trait FileDbProvider<'c>: OdbcProvider<'c> {
         Self: Sized,
     {
         let db_path_str = clean_and_ensure_path(db_path)?;
-        info!("DB Path: {:?}", db_path);
+        debug!("DB Path: {:?}", db_path_str);
         self.ensure_file_exists(&db_path_str)?;
         let driver_name = self.get_driver_name();
         let connection_string = format!("Driver={{{}}};DBQ={};", driver_name, &db_path_str);
-        let connection = environment
-            .connect_with_connection_string(&connection_string, conn_options.unwrap_or_default())?;
-        self.set_connection(connection)?;
+        self.setup_by_conn_str(environment, &connection_string, conn_options)?;
         Ok(())
     }
 
     fn ensure_file_exists(&self, db_path: &str) -> Result<(), TrnSysError> {
-        if !fs::metadata(db_path).is_ok() {
+        let file_exists = fs::exists(db_path)?;
+        if !file_exists {
+            info!("Creating file: {}", db_path);
             self.get_template()?.create_file(db_path)?;
+        } else {
+            info!("File already exists: {}", db_path);
         }
         Ok(())
     }

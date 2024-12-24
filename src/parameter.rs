@@ -1,7 +1,7 @@
 use crate::database::column::MetaCol;
 use crate::trnsys::error::{InputError, TrnSysError};
 use crate::trnsys::TrnSysState;
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 #[repr(i32)]
@@ -58,11 +58,11 @@ impl TryFrom<&TrnSysState> for Parameters {
         let num_inputs = i32::try_from(&value[2])?;
 
         // Get string from labels
-        if state.num_labels != 4 {
+        if state.num_labels < 3 {
             return Err(InputError::BadParameter {
                 index: 2,
                 message: format!(
-                    "Exact 4 labels must be given. Given {} labels.",
+                    "At least 3 labels must be given. Got {} labels.",
                     state.num_labels
                 ),
             }
@@ -73,10 +73,11 @@ impl TryFrom<&TrnSysState> for Parameters {
 
         let table_name = state.labels[1].clone();
 
-        let input_names: Vec<String> = state.labels[2]
-            .split(",")
-            .map(|s| s.trim().to_string())
-            .collect();
+        let variant_name = state.labels[2].clone();
+
+        let input_names: Vec<String> = state.labels[3..].to_vec();
+
+        debug!("input_names: {:?}", input_names);
 
         if input_names.len() != num_inputs as usize {
             return Err(InputError::BadParameter {
@@ -84,8 +85,6 @@ impl TryFrom<&TrnSysState> for Parameters {
                 message: format!("Number of input names does not match the number of inputs. Expected {}, got {}.", num_inputs, input_names.len()),
             }.into());
         }
-
-        let variant_name = state.labels[3].clone();
 
         let parameters = Parameters {
             print_interval,

@@ -10,7 +10,6 @@ pub use ext_c::SOLVEDIFFEQ as solve_diff_eq;
 pub use ext_c::STEAM_PROPERTIES as steam_properties;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int};
-use tracing::info;
 use util::c_bool;
 
 pub mod error;
@@ -81,7 +80,6 @@ pub fn found_bad_input(mut input: i32, severity: Severity, message: &str) {
 ///
 /// This function uses unsafe code to interact with the TRNSYS engine.
 pub fn found_bad_parameter(mut param: i32, severity: Severity, message: &str) {
-    info!("Found bad parameter");
     unsafe {
         param += 1;
 
@@ -95,11 +93,6 @@ pub fn found_bad_parameter(mut param: i32, severity: Severity, message: &str) {
 
         let message_ptr = message.as_ptr() as *mut c_char;
         let message_len = message.as_bytes().len();
-
-        info!(
-            "Param ptr: {:p}, Severity ptr: {:p}, Message ptr: {:p}",
-            &mut param as *mut c_int, severity_ptr, message_ptr
-        );
 
         let message = CString::new(message).unwrap();
         ext_c::FOUNDBADPARAMETER(

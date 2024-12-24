@@ -27,7 +27,7 @@ strum = "0.26.3"
 strum_macros = "0.26.3"
 include_dir = "0.7.4"
 indexmap = "2.7.0"
-
+path-clean = "1.0.1"
 
 [build-dependencies]
 toml = "0.8"
