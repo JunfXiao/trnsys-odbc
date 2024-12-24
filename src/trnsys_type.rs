@@ -1,5 +1,6 @@
 use crate::database::buffer::DataBuffer;
 use crate::database::column::MetaCol;
+use crate::database::datatype::{ColDataType, ColDef};
 use crate::database::ms_access::MsAccessProvider;
 use crate::database::ms_excel::MsExcelProvider;
 use crate::database::odbc::{FileDbProvider, OdbcProvider, OdbcProviderImpl};
@@ -54,7 +55,7 @@ impl TrnSysType {
     pub fn simulation_starts(&mut self, state: &mut TrnSysState) -> Result<(), TrnSysError> {
         info!("Simulation Starts. Connecting to Database...");
         let params = self.parameters.as_ref().unwrap();
-        match params.driver_mode {
+        let provider: Box<dyn OdbcProvider> = match params.driver_mode {
             DriverMode::ConnectionString => {
                 let mut db_provider = OdbcProviderImpl::new();
                 db_provider.setup_by_conn_str(
@@ -62,35 +63,52 @@ impl TrnSysType {
                     params.connection_string.as_str(),
                     None,
                 )?;
-                self.db_provider = Some(Box::new(db_provider));
+                Box::new(db_provider)
             }
             DriverMode::MsAccessFile => {
                 let mut db_provider = MsAccessProvider::new();
                 db_provider.setup_by_path(&ENVIRONMENT, params.connection_string.as_str(), None)?;
-                self.db_provider = Some(Box::new(db_provider));
+                Box::new(db_provider)
             }
             DriverMode::MsExcelFile => {
                 let mut db_provider = MsExcelProvider::new();
                 db_provider.setup_by_path(&ENVIRONMENT, params.connection_string.as_str(), None)?;
-                self.db_provider = Some(Box::new(db_provider));
+                Box::new(db_provider)
             }
             DriverMode::SqliteFile => {
                 let mut db_provider = SqliteProvider::new();
                 db_provider.setup_by_path(&ENVIRONMENT, params.connection_string.as_str(), None)?;
-                self.db_provider = Some(Box::new(db_provider));
+                Box::new(db_provider)
             }
-        }
+        };
 
-        // Create or Ensure Table
+        // Format the fields
         let input_names = params
             .input_names
             .iter()
-            .map(|s| (s.clone(), "DOUBLE".to_owned()))
+            .map(|s| ColDef::new(s, ColDataType::Number { decimal: false }, true, false))
             .collect::<Vec<_>>();
-        self.db_provider
-            .as_mut()
-            .unwrap()
-            .ensure_table(&params.table_name, input_names)?;
+
+        // format primary keys
+        let mut primary_key_sentence: Option<Vec<String>> = None;
+        if !params.primary_keys.is_empty() {
+            let primary_keys = params
+                .primary_keys
+                .iter()
+                .map(|col| col.as_str().to_string())
+                .collect::<Vec<_>>();
+            primary_key_sentence = Some(vec![format!("PRIMARY KEY ({})", primary_keys.join(", "))]);
+        }
+
+        self.db_provider = Some(provider);
+
+        let db = self.db_provider.as_mut().unwrap();
+
+        db.ensure_table(&params.table_name, input_names, primary_key_sentence)?;
+
+        // Remove existing variant data
+        db.remove_variant(&params.table_name, &params.variant_name)?;
+
         Ok(())
     }
 
@@ -121,12 +139,16 @@ impl TrnSysType {
             return Ok(());
         }
 
+        // Insert data
         let row = state.inputs.iter().map(|v| v.value).collect::<Vec<f64>>();
         let mut buffer_row = DataBuffer::new(Some(row));
-        buffer_row
-            .meta_cols
-            .insert(MetaCol::SimulationTime, get_simulation_time());
+
+        // Insert meta columns
+        let params = self.parameters.as_ref().unwrap();
+        buffer_row.insert_meta_col(MetaCol::SimulationTime, get_simulation_time());
+        buffer_row.insert_meta_col(MetaCol::Variant, params.variant_name.clone());
         self.buffer.push(buffer_row);
+
         if self.is_time_to_write_buffer() {
             self.write_buffer()?;
         }
@@ -162,8 +184,8 @@ impl TrnSysType {
         let db_provider = self.db_provider.as_mut().unwrap();
         let params = self.parameters.as_ref().unwrap();
 
-        for row in self.buffer.iter() {
-            let insertable = row.to_insertable(&self.parameters.as_ref().unwrap().input_names);
+        for row in self.buffer.drain(..) {
+            let insertable = row.into_insertable(&self.parameters.as_ref().unwrap().input_names);
             db_provider.insert_data(&params.table_name, insertable)?;
         }
         self.buffer.clear();

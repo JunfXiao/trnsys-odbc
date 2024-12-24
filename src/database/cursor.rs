@@ -12,8 +12,8 @@ where
         let mut table_name_index = None;
         for (index, name) in self.column_names()?.enumerate() {
             let name = name?;
-            if name == "TABLE_NAME" {
-                table_name_index = Some(index);
+            if name == col_name {
+                table_name_index = Some(index + 1);
                 break;
             }
         }

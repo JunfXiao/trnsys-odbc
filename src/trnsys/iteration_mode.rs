@@ -1,5 +1,3 @@
-
-
 /// The IterationMode enum is used to specify the iteration mode of a Type.
 /// It determines when and how often the Type is called during the simulation. \
 /// Usually, the static-mode types are called first, followed by the dynamic-mode types, \
