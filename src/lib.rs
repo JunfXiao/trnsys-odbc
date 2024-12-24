@@ -87,7 +87,7 @@ fn main(state: &mut TrnSysState, type_instance: &mut TrnSysType) -> Result<(), T
     }
     state.read_input_values();
     state.read_parameter_values();
-
+    state.simulation_time = get_simulation_time();
     // read_storage(&mut state);
 
     if is_last_call_of_simulation() {

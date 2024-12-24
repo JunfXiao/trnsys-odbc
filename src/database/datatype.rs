@@ -1,3 +1,4 @@
+use odbc_api::buffers::BufferDesc;
 use odbc_api::DataType;
 use std::hash::{Hash, Hasher};
 
@@ -35,6 +36,14 @@ impl ColDef {
             data_type,
             not_null,
             primary_key,
+        }
+    }
+
+    pub fn to_buffer_desc(&self) -> BufferDesc {
+        match &self.data_type {
+            ColDataType::Text => BufferDesc::Text { max_str_len: 255 },
+            ColDataType::Number { decimal } => BufferDesc::F64 { nullable: true },
+            ColDataType::DateTime => BufferDesc::Date { nullable: true },
         }
     }
 }

@@ -24,6 +24,7 @@ pub(crate) struct TrnSysState<D = (), S = ()> {
     // pub(crate) variable_store: Vec<TrnSysValue>,
     pub(crate) dynamic_store: Option<Box<dyn StoreProvider<D>>>,
     pub(crate) static_store: Option<Box<dyn StoreProvider<S>>>,
+    pub(crate) simulation_time: f64,
 }
 
 impl TrnSysState {
@@ -48,10 +49,10 @@ impl TrnSysState {
             outputs: vec![],
             default_output_values: vec![],
 
-            // num_stored_variables: (0, 0),
-            // TODO: Use storage if you need to read states from last iteration/time step
             static_store: None,
             dynamic_store: None,
+
+            simulation_time: 0.0,
         }
     }
 

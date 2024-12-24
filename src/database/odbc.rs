@@ -7,6 +7,7 @@ use crate::database::path::clean_and_ensure_path;
 use crate::impl_odbc_provider;
 use crate::trnsys::error::TrnSysError;
 use indexmap::IndexSet;
+use odbc_api::buffers::BufferDesc;
 use odbc_api::parameter::InputParameter;
 use odbc_api::sys::{Date, Time, Timestamp};
 use odbc_api::{Connection, ConnectionOptions, Cursor, DataType, Environment, ResultSetMetadata};
@@ -158,7 +159,6 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             debug!("Create Table Query: {}", create_table_query);
             connection.execute(&create_table_query, ())?;
         }
-
         Ok(())
     }
 
@@ -170,7 +170,9 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             escape_col_name(MetaCol::Variant.as_str()),
             variant_name
         );
+        info!("Remove Variant Query: {}", query);
         connection.execute(&query, ())?;
+        info!("Variant removed.");
         Ok(())
     }
 
@@ -196,53 +198,43 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         let mut statement = conn.prepare(&query)?;
         let params = cols.into_iter().map(|(_, param)| param).collect::<Vec<_>>();
         statement.execute(params.as_slice())?;
+
         Ok(())
     }
 
-    /// Inserts multiple rows of data into the specified table in bulk.
-    ///
-    /// # Arguments
-    ///
-    /// * `table` - The name of the table to insert data into.
-    /// * `cols` - A vector of column names corresponding to the data being inserted.
-    /// * `buffer_desc` - A vector of `BufferDesc` describing the data types and sizes of the columns.
-    /// * `data` - A vector of vectors, where each inner vector represents a row of data to be inserted.
-    ///            The data is organized as `Vec<Col<Row<data>>>`.
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), TrnSysError>` - Returns `Ok(())` if the data is successfully inserted, otherwise returns an error.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if there is an issue with the database connection or if the
-    /// data insertion fails.
-    // fn bulk_insert_data(&self, table: &str, cols: Vec<String>, buffer_desc: Vec<BufferDesc>, data: Vec<Vec<Box<dyn InputParameter>>>) -> Result<(), TrnSysError> {
-    //         let conn = self.get_connection()?;
-    //         let col_names = cols.iter().map(|str|escape_col_name(str)).collect::<Vec<_>>().join(", ");
-    //         let placeholders = (0..cols.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
-    //         let query = format!("INSERT INTO {} ({}) VALUES ({})", table, col_names, placeholders);
-    //
-    //         let prepared = conn.prepare(&query)?;
-    //         let capacity = data.len();
-    //         let mut prebound = prepared.into_column_inserter(capacity, buffer_desc.as_slice())?;
-    //
-    //         prebound.set_num_rows(capacity);
-    //         for (i, col_data) in data.iter().enumerate() {
-    //             let mut col = prebound.column_mut(i);
-    //
-    //             for (j, param) in col_data.iter().enumerate() {
-    //                 todo!()
-    //             }
-    //         }
-    //
-    //         let mut statement = conn.prepare(&query)?;
-    //         for row in data {
-    //             let params = row.into_iter().collect::<Vec<_>>();
-    //             statement.execute(params.as_slice())?;
-    //         }
-    //         Ok(())
-    //     }
+    fn batch_insert_data(
+        &self,
+        table: &str,
+        col_names: Vec<String>,
+        rows: Vec<Vec<Box<dyn InputParameter>>>,
+    ) -> Result<(), TrnSysError> {
+        let conn = self.get_connection()?;
+
+        let col_name_field = col_names
+            .iter()
+            .map(|name| escape_col_name(name.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let placeholders = rows
+            .first()
+            .expect("empty row")
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let query = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table, col_name_field, placeholders
+        );
+        debug!("Insert Query: {}", query);
+
+        let mut statement = conn.prepare(&query)?;
+        for row in rows {
+            statement.execute(row.as_slice())?;
+        }
+        Ok(())
+    }
 
     fn query_data(
         &self,

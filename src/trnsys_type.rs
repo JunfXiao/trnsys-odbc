@@ -22,6 +22,9 @@ pub(crate) struct TrnSysType {
     last_recorded_no: u32,
     buffer: Vec<DataBuffer>,
 }
+
+const ROW_BUFFER_SIZE: usize = 24 * 30;
+
 impl TrnSysType {
     /// set up parameters for the TRNSYS type
     pub fn new() -> Self {
@@ -29,7 +32,7 @@ impl TrnSysType {
             parameters: None,
             db_provider: None,
             last_recorded_no: 0,
-            buffer: vec![],
+            buffer: Vec::with_capacity(ROW_BUFFER_SIZE),
         }
     }
 
@@ -125,8 +128,10 @@ impl TrnSysType {
     /// in the dynamic storage
     pub fn end_of_timestep(&mut self, state: &mut TrnSysState) -> Result<(), TrnSysError> {
         // Perform Any "End of Timestep" Manipulations That May Be Required
-        if self.get_new_record_no() == self.last_recorded_no {
+        if self.get_new_record_no(state.simulation_time) == self.last_recorded_no {
             return Ok(());
+        } else {
+            self.last_recorded_no = self.get_new_record_no(state.simulation_time);
         }
 
         // Insert data
@@ -139,7 +144,7 @@ impl TrnSysType {
         buffer_row.insert_meta_col(MetaCol::Variant, params.variant_name.clone());
         self.buffer.push(buffer_row);
 
-        if self.is_time_to_write_buffer() {
+        if self.is_time_to_write_buffer(state.simulation_time) {
             self.write_buffer()?;
             self.buffer.clear();
         }
@@ -157,15 +162,14 @@ impl TrnSysType {
         Ok(default_outputs)
     }
 
-    fn get_new_record_no(&self) -> u32 {
+    fn get_new_record_no(&self, simulation_time: f64) -> u32 {
         let interval = self.parameters.as_ref().unwrap().print_interval;
-        let simulation_time = get_simulation_time();
 
         (simulation_time / interval) as u32
     }
 
-    fn is_time_to_write_buffer(&self) -> bool {
-        self.buffer.len() >= 24 * 10 || get_simulation_stop_time() == get_simulation_time()
+    fn is_time_to_write_buffer(&self, simulation_time: f64) -> bool {
+        self.buffer.len() >= ROW_BUFFER_SIZE - 10 || get_simulation_stop_time() == simulation_time
     }
 
     fn write_buffer(&mut self) -> Result<(), TrnSysError> {
@@ -175,10 +179,24 @@ impl TrnSysType {
         let db_provider = self.db_provider.as_mut().unwrap();
         let params = self.parameters.as_ref().unwrap();
 
-        for row in self.buffer.drain(..) {
-            let insertable = row.into_insertable(&self.parameters.as_ref().unwrap().input_names);
-            db_provider.insert_data(&params.table_name, insertable)?;
-        }
+        let col_names = self
+            .buffer
+            .iter()
+            .map(|r| r.get_col_names(params.input_names.clone()))
+            .collect::<Vec<_>>();
+
+        let row_insertables = self
+            .buffer
+            .drain(..)
+            .map(|row| row.into_insertable())
+            .collect::<Vec<_>>();
+
+        db_provider.batch_insert_data(
+            &params.table_name,
+            col_names.first().unwrap().clone(),
+            row_insertables,
+        )?;
+
         self.buffer.clear();
         Ok(())
     }

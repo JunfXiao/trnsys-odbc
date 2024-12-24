@@ -1,7 +1,7 @@
 use crate::database::datatype::{ColDataType, ColDef};
 use strum_macros::EnumIter;
 
-#[derive(Debug, EnumIter, Eq, Hash, PartialEq, Clone)]
+#[derive(Debug, EnumIter, Eq, Hash, PartialEq, Clone, Ord, PartialOrd)]
 pub enum MetaCol {
     Variant,
     SimulationTime,
