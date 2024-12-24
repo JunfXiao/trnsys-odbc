@@ -20,10 +20,15 @@ Store TrnSys Simulation Results in MS Excel, MS Access, SQLite and more ODBC Dat
 
 ### Pre-requisites
 
+#### Install Drivers
 Install the ODBC driver for the database you want to connect to.
 
 - If you've installed Microsoft Office, then you already have the drivers for Microsoft Access and Excel.
 - For SQLite, you can download the driver from [here](https://www.ch-werner.de/sqliteodbc/).
+
+#### Install the component
+- Copy the dll from release to your TrnSys User Dll Folder, e.g. `C:\TRNSYS18\UserLib\ReleaseDLLs\`
+- If you use Simulation Studio, copy the .tmf file to the Perfomas Folder, e.g. `C:\TRNSYS18\Studio\Proformas\`
 
 ### Parameters
 
