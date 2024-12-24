@@ -35,12 +35,13 @@ impl DataBuffer {
         input_data_names: &Vec<String>,
     ) -> Vec<(String, Box<dyn InputParameter>)> {
         let mut insertable: Vec<(String, Box<dyn InputParameter>)> = Vec::new();
-        for (i, data) in self.input_data.iter().enumerate() {
-            insertable.push((input_data_names[i].clone(), Box::new(data.into_parameter())));
-        }
         for (meta_col, data) in self.meta_cols.clone().lock().unwrap().drain() {
             insertable.push((meta_col.as_str().to_string(), data));
         }
+        for (i, data) in self.input_data.iter().enumerate() {
+            insertable.push((input_data_names[i].clone(), Box::new(data.into_parameter())));
+        }
+
         insertable
     }
 }

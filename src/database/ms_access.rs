@@ -10,7 +10,11 @@ pub struct MsAccessProvider<'c> {
     connection: Option<Mutex<Connection<'c>>>,
 }
 
-impl SqlDialect for MsAccessProvider<'_> {}
+impl SqlDialect for MsAccessProvider<'_> {
+    fn get_decimal_type(&self) -> String {
+        "FLOAT".to_string()
+    }
+}
 
 impl_odbc_provider!(MsAccessProvider);
 

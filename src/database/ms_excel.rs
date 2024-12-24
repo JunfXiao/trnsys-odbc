@@ -52,14 +52,14 @@ impl<'c> FileDbProvider<'c> for MsExcelProvider<'c> {
         let db_path = clean_and_ensure_path(db_path)?;
         info!("DB Path: {}", db_path);
         self.ensure_file_exists(&db_path)?;
-        let conn = environment.connect_with_connection_string(
+        self.setup_by_conn_str(
+            environment,
             &format!(
-                "DRIVER={};DBQ={};FIRSTROWHASNAMES=1;READONLY=FALSE;",
+                "DRIVER={{{}}};DBQ={};FIRSTROWHASNAMES=1;READONLY=FALSE;",
                 self.get_driver_name(),
                 db_path
             ),
-            conn_options.unwrap_or_default(),
-        )?;
-        self.set_connection(conn)
+            conn_options,
+        )
     }
 }

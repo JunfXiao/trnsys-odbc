@@ -12,6 +12,7 @@ use crate::trnsys::*;
 use odbc_api::Environment;
 use std::sync::LazyLock;
 use tracing::info;
+use tracing_subscriber::fmt::format;
 
 static ENVIRONMENT: LazyLock<Environment> = LazyLock::new(|| Environment::new().unwrap());
 
@@ -86,25 +87,14 @@ impl TrnSysType {
         let input_names = params
             .input_names
             .iter()
-            .map(|s| ColDef::new(s, ColDataType::Number { decimal: false }, true, false))
+            .map(|s| ColDef::new(s, ColDataType::Number { decimal: true }, true, false))
             .collect::<Vec<_>>();
-
-        // format primary keys
-        let mut primary_key_sentence: Option<Vec<String>> = None;
-        if !params.primary_keys.is_empty() {
-            let primary_keys = params
-                .primary_keys
-                .iter()
-                .map(|col| col.as_str().to_string())
-                .collect::<Vec<_>>();
-            primary_key_sentence = Some(vec![format!("PRIMARY KEY ({})", primary_keys.join(", "))]);
-        }
 
         self.db_provider = Some(provider);
 
         let db = self.db_provider.as_mut().unwrap();
 
-        db.ensure_table(&params.table_name, input_names, primary_key_sentence)?;
+        db.ensure_table(&params.table_name, input_names, None)?;
 
         // Remove existing variant data
         db.remove_variant(&params.table_name, &params.variant_name)?;
@@ -151,6 +141,7 @@ impl TrnSysType {
 
         if self.is_time_to_write_buffer() {
             self.write_buffer()?;
+            self.buffer.clear();
         }
         Ok(())
     }

@@ -18,12 +18,9 @@ impl MetaCol {
     pub fn col_def(&self) -> ColDef {
         match self {
             // MetaCols::CreatedAt => "DATETIME DEFAULT Now()",
-            MetaCol::SimulationTime => ColDef::new(
-                "SimTime",
-                ColDataType::Number { decimal: false },
-                true,
-                true,
-            ),
+            MetaCol::SimulationTime => {
+                ColDef::new("SimTime", ColDataType::Number { decimal: true }, true, true)
+            }
             MetaCol::Variant => ColDef::new("Variant", ColDataType::Text, true, true),
         }
     }
