@@ -1,6 +1,6 @@
 # trnsys-odbc
 
-Store TrnSys Simulation Results in MS Excel, SQLite and more ODBC Databases.
+Store TrnSys Simulation Results in MS Excel, MS Access, SQLite and more ODBC Databases.
 
 ## Supported Databases
 
@@ -8,12 +8,13 @@ Store TrnSys Simulation Results in MS Excel, SQLite and more ODBC Databases.
 
 - Microsoft Access
 - Microsoft Excel
+- SQLite
 
 ### Theoretical Support
 
-- SQLite
+
 - Microsoft SQL Server
-- All other ODBC compliant databases
+- All other ODBC-compliant databases
 
 ## Usage
 
