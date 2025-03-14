@@ -4,6 +4,7 @@ use crate::database::datatype::{ColDataType, ColDef};
 use crate::database::ms_access::MsAccessProvider;
 use crate::database::ms_excel::MsExcelProvider;
 use crate::database::odbc::{FileDbProvider, OdbcProvider, OdbcProviderImpl};
+use crate::database::postgres::PostgreSQLProvider;
 use crate::database::sqlite::SqliteProvider;
 use crate::parameter::{DriverMode, Parameters};
 use crate::trnsys::error::TrnSysError;
@@ -84,13 +85,22 @@ impl TrnSysType {
                 db_provider.setup_by_path(&ENVIRONMENT, params.connection_string.as_str(), None)?;
                 Box::new(db_provider)
             }
+            DriverMode::Postgres => {
+                let mut db_provider = PostgreSQLProvider::new();
+                db_provider.setup_by_conn_str(
+                    &ENVIRONMENT,
+                    params.connection_string.as_str(),
+                    None,
+                )?;
+                Box::new(db_provider)
+            }
         };
 
         // Format the fields
         let input_names = params
             .input_names
             .iter()
-            .map(|s| ColDef::new(s, ColDataType::Number { decimal: true }, true, false))
+            .map(|s| ColDef::new(s, ColDataType::Number { decimal: true }, false, false))
             .collect::<Vec<_>>();
 
         self.db_provider = Some(provider);

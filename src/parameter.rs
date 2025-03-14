@@ -1,32 +1,18 @@
 use crate::database::column::MetaCol;
+use crate::database::odbc::OdbcProvider;
 use crate::trnsys::error::{InputError, TrnSysError};
 use crate::trnsys::TrnSysState;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tracing::{debug, info};
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, TryFromPrimitive, IntoPrimitive)]
 #[repr(i32)]
 pub enum DriverMode {
     MsAccessFile = 1,
     MsExcelFile = 2,
     SqliteFile = 3,
     ConnectionString = 4,
-}
-
-impl TryFrom<i32> for DriverMode {
-    type Error = TrnSysError;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(DriverMode::MsAccessFile),
-            2 => Ok(DriverMode::MsExcelFile),
-            3 => Ok(DriverMode::SqliteFile),
-            4 => Ok(DriverMode::ConnectionString),
-            _ => Err(TrnSysError::ConversionError {
-                param: "DriverMode".to_string(),
-                message: format!("Cannot convert {} to DriverMode", value),
-            }),
-        }
-    }
+    Postgres = 5,
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +40,12 @@ impl TryFrom<&TrnSysState> for Parameters {
             .into());
         }
         let print_interval = value[0].value;
-        let driver_mode = DriverMode::try_from(i32::try_from(&value[1])?)?;
+        let driver_mode = DriverMode::try_from(i32::try_from(&value[1])?).map_err(|e| {
+            TrnSysError::ConversionError {
+                param: "DriverMode".to_string(),
+                message: e.to_string(),
+            }
+        })?;
         let num_inputs = i32::try_from(&value[2])?;
 
         // Get string from labels

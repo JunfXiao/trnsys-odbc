@@ -1,4 +1,4 @@
-use super::column::{escape_col_name, MetaCol};
+use super::column::MetaCol;
 use super::cursor::CursorQuery;
 use super::template::TemplateFile;
 use crate::database::datatype::{ColDataType, ColDef, DataTypeQuery};
@@ -167,7 +167,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         let query = format!(
             "DELETE FROM {} WHERE {} = '{}'",
             table_name,
-            escape_col_name(MetaCol::Variant.as_str()),
+            self.format_identifier(MetaCol::Variant.as_str()),
             variant_name
         );
         info!("Remove Variant Query: {}", query);
@@ -185,7 +185,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
 
         let col_names = cols
             .iter()
-            .map(|(name, _)| escape_col_name(name.as_str()))
+            .map(|(name, _)| self.format_identifier(name.as_str()))
             .collect::<Vec<_>>()
             .join(", ");
         let placeholders = cols.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
@@ -212,7 +212,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
 
         let col_name_field = col_names
             .iter()
-            .map(|name| escape_col_name(name.as_str()))
+            .map(|name| self.format_identifier(name.as_str()))
             .collect::<Vec<_>>()
             .join(", ");
         let placeholders = rows
@@ -245,7 +245,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         let conn = self.get_connection()?;
         let col_names = cols
             .iter()
-            .map(|str| escape_col_name(str))
+            .map(|str| self.format_identifier(str))
             .collect::<Vec<_>>()
             .join(", ");
         let mut query = format!("SELECT {} FROM {}", col_names, table);
