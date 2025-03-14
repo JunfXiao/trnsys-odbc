@@ -1,4 +1,3 @@
-use crate::database::column::escape_col_name;
 use crate::database::datatype::{ColDataType, ColDef};
 
 pub trait SqlDialect {
@@ -42,7 +41,15 @@ pub trait SqlDialect {
         if col_def.not_null && self.support_nullability() {
             data_type_str.push_str(" NOT NULL");
         }
-        format!("{} {}", escape_col_name(&col_def.name), data_type_str)
+        format!(
+            "{} {}",
+            self.format_identifier(&col_def.name),
+            data_type_str
+        )
+    }
+
+    fn format_identifier(&self, identifier: &str) -> String {
+        format!("[{}]", identifier.replace("]", "]]"))
     }
 
     fn get_primary_key_str(&self, col_defs: Vec<&ColDef>) -> String {
@@ -59,7 +66,7 @@ pub trait SqlDialect {
 
         let primary_key_str = primary_cols
             .iter()
-            .map(|col_def| escape_col_name(&col_def.name))
+            .map(|col_def| self.format_identifier(&col_def.name))
             .collect::<Vec<_>>()
             .join(", ");
 

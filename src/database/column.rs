@@ -25,7 +25,3 @@ impl MetaCol {
         }
     }
 }
-
-pub fn escape_col_name(col_name: &str) -> String {
-    format!("[{}]", col_name.replace("]", "]]"))
-}

@@ -33,24 +33,24 @@ Install the ODBC driver for the database you want to connect to.
 
 ### Parameters
 
-| No | Name             | Description                                                                                                                                                                        | Default |
-|----|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
-| 1  | `PrintInterval`  | Interval to print simulation results to the database.                                                                                                                              | 1       |
-| 2  | `DriverMode`     | Integer between 1 and 4. Driver Mode determines how to write the data to the database. <br> MsAccessFile = 1, <br> MsExcelFile = 2, <br> SqliteFile = 3, <br> ODBC Connection String = 4 | 1       |
-| 3  | `NumberOfInputs` | Number of inputs connected to this component.                                                                                                                                      | 3       |
+| No | Name             | Description                                                                                                                                                                                                  | Default |
+|----|------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
+| 1  | `PrintInterval`  | Interval to print simulation results to the database.                                                                                                                                                        | 1       |
+| 2  | `DriverMode`     | Integer between 1 and 5. Driver Mode determines how to write the data to the database. <br> MsAccessFile = 1, <br> MsExcelFile = 2, <br> SqliteFile = 3, <br> ODBC Connection String = 4 <br> PostgreSQL = 5 | 1       |
+| 3  | `NumberOfInputs` | Number of inputs connected to this component.                                                                                                                                                                | 3       |
 
 ### Special Cards / Labels
 
 All the answers to the cards should be wrapped in double quotes. For example, if the answer is `My Database`, then it
 should be written as `"My Database"`.
 
-| No | Name                | Description                                                                                                                                                                            |
-|----|---------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 1  | `Labels`            | Please do not edit this. This is used to store the number of labels.                                                                                                                   |
-| 2  | `Connection String` | If `DriverMode` is 4, then this card is used to store the connection string. If the file-based database is used (mode 1-3), then the connection string should be the path to the file. |
-| 3  | `Table Name`        | Name of the table to write the data.                                                                                                                                                   |
-| 4  | `Variant Name`      | Name of the variant to write the data. At the beginning of the simulation, **all data** with the same variant name will be **deleted** from the table.                                 |
-| 5+ | `Input Names`       | The name of all columns, one by one, each wrapped by double quotation marks.                                                                                                           |
+| No | Name                | Description                                                                                                                                                                                 |
+|----|---------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1  | `Labels`            | Please do not edit this. This is used to store the number of labels.                                                                                                                        |
+| 2  | `Connection String` | If `DriverMode` is 4 or 5, then this card is used to store the connection string. If the file-based database is used (mode 1-3), then the connection string should be the path to the file. |
+| 3  | `Table Name`        | Name of the table to write the data.                                                                                                                                                        |
+| 4  | `Variant Name`      | Name of the variant to write the data. At the beginning of the simulation, **all data** with the same variant name will be **deleted** from the table.                                      |
+| 5+ | `Input Names`       | The name of all columns, one by one, each wrapped by double quotation marks.                                                                                                                |
 
 ## Example Deck File
 
