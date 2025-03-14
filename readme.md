@@ -9,6 +9,7 @@ Store TrnSys Simulation Results in MS Excel, MS Access, SQLite and more ODBC Dat
 - Microsoft Access
 - Microsoft Excel
 - SQLite
+- PostgreSQL
 
 ### Theoretical Support
 
