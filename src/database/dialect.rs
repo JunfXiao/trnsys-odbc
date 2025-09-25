@@ -25,6 +25,12 @@ pub trait SqlDialect {
         true
     }
 
+    /// Dialect hint for how many rows to insert per transaction/chunk.
+    /// Defaults to 400 and can be overridden by providers (e.g., MS Access).
+    fn preferred_insert_chunk_size(&self) -> usize {
+        400
+    }
+
     fn get_col_def_str(&self, col_def: &ColDef) -> String {
         let mut data_type_str = match col_def.data_type {
             ColDataType::Text => self.get_text_type(),

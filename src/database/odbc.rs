@@ -7,7 +7,6 @@ use crate::database::path::clean_and_ensure_path;
 use crate::impl_odbc_provider;
 use crate::trnsys::error::TrnSysError;
 use indexmap::IndexSet;
-use odbc_api::buffers::BufferDesc;
 use odbc_api::parameter::InputParameter;
 use odbc_api::sys::{Date, Time, Timestamp};
 use odbc_api::{Connection, ConnectionOptions, Cursor, DataType, Environment, ResultSetMetadata};
@@ -208,6 +207,9 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         col_names: Vec<String>,
         rows: Vec<Vec<Box<dyn InputParameter>>>,
     ) -> Result<(), TrnSysError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
         let conn = self.get_connection()?;
 
         let col_name_field = col_names
@@ -215,24 +217,87 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             .map(|name| self.format_identifier(name.as_str()))
             .collect::<Vec<_>>()
             .join(", ");
-        let placeholders = rows
-            .first()
-            .expect("empty row")
-            .iter()
+        let placeholders = (0..col_names.len())
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(", ");
-
         let query = format!(
             "INSERT INTO {} ({}) VALUES ({})",
             table, col_name_field, placeholders
         );
         debug!("Insert Query: {}", query);
 
-        let mut statement = conn.prepare(&query)?;
-        for row in rows {
-            statement.execute(row.as_slice())?;
+        // Transactional chunking for speed
+        let chunk = self.preferred_insert_chunk_size();
+        let _ = conn.execute("BEGIN TRANSACTION", ());
+        {
+            let mut statement = conn.prepare(&query)?;
+            if rows.len() <= chunk {
+                for row in rows {
+                    statement.execute(row.as_slice())?;
+                }
+            } else {
+                for batch in rows.chunks(chunk) {
+                    for row in batch {
+                        statement.execute(row.as_slice())?;
+                    }
+                }
+            }
         }
+        let _ = conn.execute("COMMIT", ());
+        Ok(())
+    }
+
+    /// Atomically replace all rows for a variant and insert the given rows.
+    fn replace_variant_rows(
+        &self,
+        table: &str,
+        variant_col: &str,
+        variant_value: &str,
+        col_names: Vec<String>,
+        rows: Vec<Vec<Box<dyn InputParameter>>>,
+    ) -> Result<(), TrnSysError> {
+        let conn = self.get_connection()?;
+        let _ = conn.execute("BEGIN TRANSACTION", ());
+        let del = format!(
+            "DELETE FROM {} WHERE {} = '{}'",
+            table,
+            self.format_identifier(variant_col),
+            variant_value.replace("'", "''")
+        );
+        info!("Replace-Variant: {}", del);
+        conn.execute(&del, ())?;
+
+        // Reuse batch_insert_data to insert in the same transaction by not starting new tx
+        let col_name_field = col_names
+            .iter()
+            .map(|name| self.format_identifier(name.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let placeholders = (0..col_names.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table, col_name_field, placeholders
+        );
+        let chunk = self.preferred_insert_chunk_size();
+        {
+            let mut statement = conn.prepare(&query)?;
+            if rows.len() <= chunk {
+                for row in rows {
+                    statement.execute(row.as_slice())?;
+                }
+            } else {
+                for batch in rows.chunks(chunk) {
+                    for row in batch {
+                        statement.execute(row.as_slice())?;
+                    }
+                }
+            }
+        }
+        let _ = conn.execute("COMMIT", ());
         Ok(())
     }
 
@@ -393,11 +458,6 @@ mod tests {
     use std::sync::LazyLock;
     use tracing_test::traced_test;
 
-    static ENVIRONMENT: LazyLock<Environment> = LazyLock::new(|| {
-        // Initialize ODBC Environment
-        Environment::new().unwrap()
-    });
-
     #[traced_test]
     #[test]
     fn test_create_connection() {
@@ -406,10 +466,11 @@ mod tests {
             fs::remove_file(db_path).unwrap();
         }
         {
+            let env = crate::database::tests::ENVIRONMENT.clone();
+            let env = env.lock().unwrap();
+
             let mut ms_access = MsAccessProvider::new();
-            ms_access
-                .setup_by_path(&ENVIRONMENT, db_path, None)
-                .unwrap();
+            ms_access.setup_by_path(&env, db_path, None).unwrap();
             assert!(ms_access.get_connection().is_ok());
         }
 

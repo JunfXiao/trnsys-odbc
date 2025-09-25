@@ -59,13 +59,17 @@ mod tests {
     use crate::database::path::clean_and_ensure_path;
     use crate::database::sqlite::SqliteProvider;
     use odbc_api::{Environment, IntoParameter};
+    use std::cell::RefCell;
     use std::fs;
-    use std::sync::LazyLock;
+    use std::ops::Deref;
+    use std::sync::{Arc, LazyLock, Mutex};
     use tracing_test::traced_test;
 
-    static ENVIRONMENT: LazyLock<Environment> = LazyLock::new(|| {
+    pub static ENVIRONMENT: LazyLock<Arc<Mutex<Environment>>> = LazyLock::new(|| {
         // Initialize ODBC Environment
-        Environment::new().unwrap()
+        Arc::new(Mutex::new(
+            Environment::new().expect("Failed to create ODBC Environment"),
+        ))
     });
 
     fn test_db(provider: &mut dyn FileDbProvider) {
@@ -138,8 +142,11 @@ mod tests {
         }
 
         {
+            let mut env_ref = ENVIRONMENT.clone();
+            let mut env = env_ref.lock().unwrap();
+
             let mut provider = MsAccessProvider::new();
-            provider.setup_by_path(&ENVIRONMENT, db_path, None).unwrap();
+            provider.setup_by_path(&*env, db_path, None).unwrap();
 
             test_db(&mut provider);
         }
@@ -159,8 +166,11 @@ mod tests {
         }
 
         {
+            let env = ENVIRONMENT.clone();
+            let env = env.lock().unwrap();
+
             let mut provider = MsExcelProvider::new();
-            provider.setup_by_path(&ENVIRONMENT, db_path, None).unwrap();
+            provider.setup_by_path(&*env, db_path, None).unwrap();
 
             test_db(&mut provider);
         }
@@ -179,8 +189,11 @@ mod tests {
         }
 
         {
+            let env = ENVIRONMENT.clone();
+            let env = env.lock().unwrap();
+
             let mut provider = SqliteProvider::new();
-            provider.setup_by_path(&ENVIRONMENT, db_path, None).unwrap();
+            provider.setup_by_path(&*env, db_path, None).unwrap();
 
             test_db(&mut provider);
         }

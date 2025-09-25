@@ -14,6 +14,10 @@ impl SqlDialect for MsAccessProvider<'_> {
     fn get_decimal_type(&self) -> String {
         "FLOAT".to_string()
     }
+
+    fn preferred_insert_chunk_size(&self) -> usize {
+        200
+    }
 }
 
 impl_odbc_provider!(MsAccessProvider);

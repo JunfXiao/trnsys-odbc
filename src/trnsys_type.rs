@@ -189,11 +189,12 @@ impl TrnSysType {
         let db_provider = self.db_provider.as_mut().unwrap();
         let params = self.parameters.as_ref().unwrap();
 
+        // Compute column names once from the first buffered row
         let col_names = self
             .buffer
-            .iter()
+            .first()
             .map(|r| r.get_col_names(params.input_names.clone()))
-            .collect::<Vec<_>>();
+            .unwrap();
 
         let row_insertables = self
             .buffer
@@ -201,13 +202,8 @@ impl TrnSysType {
             .map(|row| row.into_insertable())
             .collect::<Vec<_>>();
 
-        db_provider.batch_insert_data(
-            &params.table_name,
-            col_names.first().unwrap().clone(),
-            row_insertables,
-        )?;
+        db_provider.batch_insert_data(&params.table_name, col_names, row_insertables)?;
 
-        self.buffer.clear();
         Ok(())
     }
 }
