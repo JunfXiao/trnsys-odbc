@@ -1,6 +1,5 @@
 use crate::logging::init_tracing;
 use crate::trnsys::error::{TrnSysError, TrnSysErrorHandler};
-use crate::trnsys::logging::cleanup_tracing;
 use crate::trnsys_type::TrnSysType;
 use std::collections::HashMap;
 use std::ops::DerefMut;
@@ -92,7 +91,6 @@ fn main(state: &mut TrnSysState, type_instance: &mut TrnSysType) -> Result<(), T
 
     if is_last_call_of_simulation() {
         type_instance.simulation_ends(state)?;
-        cleanup_tracing();
         return Ok(());
     }
 

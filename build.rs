@@ -27,12 +27,13 @@ fn write_entrance_code(type_number: &str) {
     let function_code = format!(
         r#"
         #[allow(non_snake_case)]
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub extern "C" fn TYPE{}() {{
             entrance();
         }}
+        const TYPE_NUMBER: u32 = {};
         "#,
-        type_number
+        type_number, type_number
     );
 
     // Write code to the file
@@ -53,11 +54,46 @@ fn main() {
         panic!("Cannot find type number in `Cargo.toml`. Please add it before building.")
     }
 
-    // Windows resource file
-    if cfg!(target_os = "windows") {
-        let res = winres::WindowsResource::new();
-        res.compile().unwrap();
+    // Add Windows resources (icon, version info, etc.)
+    let mut res = winres::WindowsResource::new();
+    res.set(
+        "FileDescription",
+        "Type 395 HAMT Model",
+    );
+    res.set("ProductName", "TRNSYS HAMT");
+    res.set("OriginalFilename", "trnsys_hamt_rs.dll");
+
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap();
+
+    let authors = std::env::var("CARGO_PKG_AUTHORS").unwrap();
+
+    res.set(
+        "LegalCopyright",
+        &format!("Copyright © 2026 {authors}. All rights reserved.W"),
+    );
+
+    let version_parts: Vec<&str> = version.split('.').collect();
+    if version_parts.len() >= 3 {
+        res.set_version_info(
+            winres::VersionInfo::FILEVERSION,
+            parse_version(version_parts[0], version_parts[1], version_parts[2], "0"),
+        );
+        res.set_version_info(
+            winres::VersionInfo::PRODUCTVERSION,
+            parse_version(version_parts[0], version_parts[1], version_parts[2], "0"),
+        );
     }
+
+    res.compile().unwrap();
+}
+
+fn parse_version(major: &str, minor: &str, patch: &str, build: &str) -> u64 {
+    let v1 = major.parse::<u16>().unwrap_or(0) as u64;
+    let v2 = minor.parse::<u16>().unwrap_or(0) as u64;
+    let v3 = patch.parse::<u16>().unwrap_or(0) as u64;
+    let v4 = build.parse::<u16>().unwrap_or(0) as u64;
+    
+    (v1 << 48) | (v2 << 32) | (v3 << 16) | v4
 }
 
 /// Watch the TRNDll64.lib file and rebuild if it changes
