@@ -22,7 +22,7 @@ crate-type = ["cdylib"]
 tracing = "0.1.26"
 tracing-subscriber = { version = "0.3.20", features = ["serde", "tracing-serde", "env-filter", "time", "local-time"] }
 thiserror = "2.0.9"
-odbc-api = "10.0.0"
+odbc-api = "25.0.0"
 strum = "0.26.3"
 strum_macros = "0.26.3"
 include_dir = "0.7.4"

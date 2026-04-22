@@ -7,8 +7,8 @@ use crate::database::path::clean_and_ensure_path;
 use crate::impl_odbc_provider;
 use crate::trnsys::error::TrnSysError;
 use indexmap::IndexSet;
-use odbc_api::buffers::BufferDesc;
 use odbc_api::parameter::InputParameter;
+use odbc_api::{BindParamDesc, IntoParameter};
 use odbc_api::sys::{Date, Time, Timestamp};
 use odbc_api::{Connection, ConnectionOptions, Cursor, DataType, Environment, ResultSetMetadata};
 use std::fs;
@@ -69,55 +69,26 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         }
         debug!("table_name: {}", table_name);
         // Check if table exists
-        let mut table_list_cursor = connection.tables("", "", table_name, "TABLE")?;
-
-        let table_name_col_index = table_list_cursor.find_col_index("TABLE_NAME")?;
-
-        let table_name_index =
-            table_name_col_index.expect("No TABLE_NAME column found in tables_cursor") as u16;
-        debug!("Table Name Index: {}", table_name_index);
-
         let mut table_exists = false;
-        // iterate tables to find if table exists
-        while let Some(mut row) = table_list_cursor.next_row()? {
-            let mut buf = Vec::new();
-            if row.get_text(table_name_index, &mut buf)? {
-                let name = String::from_utf8(buf).unwrap();
+        for row in connection.tables("", "", table_name, "TABLE")? {
+            let row = row?;
+            if let Ok(Some(name)) = row.table.as_str() {
                 debug!("Found Table: {}", name);
                 if name == table_name {
                     table_exists = true;
                     break;
                 }
-            } else {
-                debug!("No Table Name Found for Index: {}", table_name_index);
             }
         }
 
         debug!("Table exists: {}", table_exists);
         if table_exists {
-            // try with cursor
-            let mut column_info_cursor = connection.columns("", "", table_name, "")?;
-
-            // The returned cursor has the columns: TABLE_CAT, TABLE_SCHEM, TABLE_NAME,
-            // COLUMN_NAME, DATA_TYPE, TYPE_NAME, COLUMN_SIZE, BUFFER_LENGTH, DECIMAL_DIGITS,
-            // NUM_PREC_RADIX, NULLABLE, REMARKS, COLUMN_DEF, SQL_DATA_TYPE, SQL_DATETIME_SUB, CHAR_OCTET_LENGTH, ORDINAL_POSITION, IS_NULLABLE.
-            // Find the index number of the "COLUMN_NAME" column
-            let column_name_index = column_info_cursor.find_col_index("COLUMN_NAME")?;
-
-            if column_name_index.is_none() {
-                return Err(TrnSysError::GeneralError(
-                    "No COLUMN_NAME column found in columns_cursor".to_string(),
-                )
-                .into());
-            }
-            let column_name_index = column_name_index.unwrap() as u16;
-
-            while let Some(mut row) = column_info_cursor.next_row()? {
-                let mut buf = Vec::new();
-                if row.get_text(column_name_index, &mut buf)? {
-                    let column_name = String::from_utf8(buf).unwrap();
+            // Remove existing columns from the set so only missing ones remain
+            for row in connection.columns("", "", table_name, "")? {
+                let row = row?;
+                if let Ok(Some(column_name)) = row.column_name.as_str() {
                     col_type_set.shift_remove(&ColDef::new(
-                        &column_name,
+                        column_name,
                         ColDataType::Text,
                         false,
                         false,
@@ -132,7 +103,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
                     table_name,
                     self.get_col_def_str(&col_def)
                 );
-                connection.execute(&alter_query, ())?;
+                connection.execute(&alter_query, (), None)?;
             }
         } else {
             // add a new table
@@ -157,7 +128,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
                 table_name, cols_def
             );
             debug!("Create Table Query: {}", create_table_query);
-            connection.execute(&create_table_query, ())?;
+            connection.execute(&create_table_query, (), None)?;
         }
         Ok(())
     }
@@ -171,7 +142,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             variant_name
         );
         info!("Remove Variant Query: {}", query);
-        connection.execute(&query, ())?;
+        connection.execute(&query, (), None)?;
         info!("Variant removed.");
         Ok(())
     }
@@ -211,65 +182,107 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         );
         debug!("Columnar Insert Query: {}", query);
 
+        let t_total = std::time::Instant::now();
+
         conn.set_autocommit(false)?;
-        let result = (|| -> Result<(), TrnSysError> {
-            // Build buffer descriptors: text for variant, f64 for simtime and all inputs
-            let mut descriptions: Vec<BufferDesc> = Vec::with_capacity(num_cols);
-            descriptions.push(BufferDesc::Text {
-                max_str_len: variant_value.len().max(1),
-            });
-            descriptions.push(BufferDesc::F64 { nullable: false });
-            for _ in input_col_names {
-                descriptions.push(BufferDesc::F64 { nullable: false });
-            }
 
-            let prepared = conn.prepare(&query)?;
-            let mut inserter = prepared.into_column_inserter(n, descriptions)?;
-            inserter.set_num_rows(n);
+        // Try columnar array binding first (single SQLExecute for all rows).
+        // Some drivers (e.g. MS Access) silently ignore SQL_ATTR_PARAMSET_SIZE,
+        // so we check row_count after execute and fall back to row-by-row if needed.
+        let mut descriptions: Vec<BindParamDesc> = Vec::with_capacity(num_cols);
+        descriptions.push(BindParamDesc::text(variant_value.len().max(1)));
+        descriptions.push(BindParamDesc::f64(false));
+        for _ in input_col_names {
+            descriptions.push(BindParamDesc::f64(false));
+        }
 
-            // Fill Variant column (col 0) — same value repeated for all rows
+        let columnar_ok = (|| -> Result<bool, TrnSysError> {
+            let mut prepared = conn.prepare(&query)?;
             {
-                let variant_bytes = variant_value.as_bytes();
-                let mut col = inserter
-                    .column_mut(0)
-                    .as_text_view()
-                    .expect("variant column must be text");
-                for i in 0..n {
-                    col.set_cell(i, Some(variant_bytes));
+                let mut inserter = prepared.column_inserter(n, descriptions)?;
+                inserter.set_num_rows(n);
+
+                // Fill Variant column (col 0)
+                {
+                    let variant_bytes = variant_value.as_bytes();
+                    let mut col = inserter
+                        .column_mut(0)
+                        .as_text_view()
+                        .expect("variant column must be text");
+                    for i in 0..n {
+                        col.set_cell(i, Some(variant_bytes));
+                    }
                 }
-            }
-
-            // Fill SimTime column (col 1)
-            {
-                let col = inserter
-                    .column_mut(1)
-                    .as_slice::<f64>()
-                    .expect("simtime column must be f64");
-                col.copy_from_slice(sim_times);
-            }
-
-            // Fill input data columns (cols 2..N) — transpose from row-major to column-major
-            for (col_idx, _) in input_col_names.iter().enumerate() {
-                let col = inserter
-                    .column_mut(2 + col_idx)
-                    .as_slice::<f64>()
-                    .expect("input column must be f64");
-                for (row_idx, row) in input_rows.iter().enumerate() {
-                    col[row_idx] = row[col_idx];
+                // Fill SimTime column (col 1)
+                {
+                    let col = inserter
+                        .column_mut(1)
+                        .as_slice::<f64>()
+                        .expect("simtime column must be f64");
+                    col.copy_from_slice(sim_times);
                 }
-            }
+                // Fill input data columns (cols 2..N)
+                for (col_idx, _) in input_col_names.iter().enumerate() {
+                    let col = inserter
+                        .column_mut(2 + col_idx)
+                        .as_slice::<f64>()
+                        .expect("input column must be f64");
+                    for (row_idx, row) in input_rows.iter().enumerate() {
+                        col[row_idx] = row[col_idx];
+                    }
+                }
 
-            inserter.execute()?;
-            Ok(())
+                let t = std::time::Instant::now();
+                inserter.execute()?;
+                debug!("[timer] columnar execute ({} rows, 1 call): {:?}", n, t.elapsed());
+            } // inserter dropped — releases borrow on prepared
+
+            let rows_affected = prepared.row_count()?.unwrap_or(0);
+            debug!("[timer] columnar rows_affected: {} (expected {})", rows_affected, n);
+            Ok(rows_affected == n)
         })();
 
-        if result.is_err() {
-            let _ = conn.rollback();
-        } else {
-            conn.commit()?;
+        match columnar_ok {
+            Ok(true) => {
+                // Columnar insert succeeded — commit
+                conn.commit()?;
+            }
+            _ => {
+                // Array binding not fully supported — rollback and retry row-by-row
+                let _ = conn.rollback();
+                info!("Columnar insert incomplete — falling back to row-by-row");
+
+                conn.set_autocommit(false)?;
+                let result = (|| -> Result<(), TrnSysError> {
+                    let mut statement = conn.prepare(&query)?;
+                    for row_idx in 0..n {
+                        let mut params: Vec<Box<dyn InputParameter>> =
+                            Vec::with_capacity(num_cols);
+                        params.push(Box::new(variant_value.to_string().into_parameter()));
+                        params.push(Box::new(sim_times[row_idx].into_parameter()));
+                        for col_idx in 0..input_col_names.len() {
+                            params.push(Box::new(input_rows[row_idx][col_idx].into_parameter()));
+                        }
+                        statement.execute(params.as_slice())?;
+                    }
+                    Ok(())
+                })();
+                if result.is_err() {
+                    let _ = conn.rollback();
+                } else {
+                    conn.commit()?;
+                }
+                result?;
+            }
         }
         conn.set_autocommit(true)?;
-        result
+
+        debug!(
+            "[timer] columnar_batch_insert total ({} rows): {:?}",
+            n,
+            t_total.elapsed()
+        );
+        Ok(())
     }
 
     fn insert_data(
@@ -375,7 +388,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         conn.set_autocommit(false)?;
         let result = (|| -> Result<(), TrnSysError> {
             info!("Replace-Variant: {}", del);
-            conn.execute(&del, ())?;
+            conn.execute(&del, (), None)?;
             let mut statement = conn.prepare(&query)?;
             for row in rows {
                 statement.execute(row.as_slice())?;
@@ -408,7 +421,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             query.push_str(" ");
             query.push_str(&additional);
         }
-        let cursor = conn.execute(&query, ())?;
+        let cursor = conn.execute(&query, (), None)?;
 
         if let Some(mut cursor) = cursor {
             let headline: Vec<String> = cursor.column_names()?.collect::<Result<_, _>>()?;

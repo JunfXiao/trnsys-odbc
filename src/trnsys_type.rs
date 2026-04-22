@@ -11,14 +11,96 @@ use crate::trnsys::error::TrnSysError;
 use crate::trnsys::param::TrnSysValue;
 use crate::trnsys::*;
 use odbc_api::Environment;
+use std::sync::mpsc;
 use std::sync::LazyLock;
-use tracing::info;
+use std::thread;
+use tracing::{debug, info};
 
 static ENVIRONMENT: LazyLock<Environment> = LazyLock::new(|| Environment::new().unwrap());
+
+/// Payload sent from simulation thread to writer thread.
+struct WriteBatch {
+    sim_times: Vec<f64>,
+    input_rows: Vec<Vec<f64>>,
+}
+
+/// Bounded channel capacity — simulation can produce up to 3 batches ahead before blocking.
+const CHANNEL_CAPACITY: usize = 3;
+
+/// Owns the DB provider on a background thread; accepts WriteBatch via bounded channel.
+struct BackgroundWriter {
+    sender: Option<mpsc::SyncSender<WriteBatch>>,
+    handle: Option<thread::JoinHandle<Result<(), TrnSysError>>>,
+}
+
+impl BackgroundWriter {
+    fn new(
+        db_provider: Box<dyn OdbcProvider<'static>>,
+        table_name: String,
+        variant_col: String,
+        simtime_col: String,
+        input_col_names: Vec<String>,
+        variant_name: String,
+    ) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<WriteBatch>(CHANNEL_CAPACITY);
+        let handle = thread::spawn(move || -> Result<(), TrnSysError> {
+            while let Ok(batch) = rx.recv() {
+                let t = std::time::Instant::now();
+                db_provider.columnar_batch_insert(
+                    &table_name,
+                    &variant_col,
+                    &simtime_col,
+                    &input_col_names,
+                    &variant_name,
+                    &batch.sim_times,
+                    &batch.input_rows,
+                )?;
+                debug!(
+                    "[bg-writer] wrote {} rows in {:?}",
+                    batch.sim_times.len(),
+                    t.elapsed()
+                );
+            }
+            Ok(())
+        });
+        BackgroundWriter {
+            sender: Some(tx),
+            handle: Some(handle),
+        }
+    }
+
+    /// Send a batch to the writer. Blocks only if CHANNEL_CAPACITY batches are queued.
+    fn send(&self, batch: WriteBatch) -> Result<(), TrnSysError> {
+        if let Some(ref sender) = self.sender {
+            sender
+                .send(batch)
+                .map_err(|_| TrnSysError::GeneralError("Background writer thread died".into()))?;
+        }
+        Ok(())
+    }
+
+    /// Close channel, wait for writer to finish, propagate any errors.
+    fn flush(&mut self) -> Result<(), TrnSysError> {
+        // Drop sender to signal the writer thread to exit
+        self.sender.take();
+        if let Some(handle) = self.handle.take() {
+            match handle.join() {
+                Ok(result) => result?,
+                Err(_) => {
+                    return Err(TrnSysError::GeneralError(
+                        "Background writer thread panicked".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
 pub(crate) struct TrnSysType {
     parameters: Option<Parameters>,
     db_provider: Option<Box<dyn OdbcProvider<'static>>>,
+    writer: Option<BackgroundWriter>,
     last_recorded_no: u32,
     buffer: Vec<DataBuffer>,
 }
@@ -31,6 +113,7 @@ impl TrnSysType {
         TrnSysType {
             parameters: None,
             db_provider: None,
+            writer: None,
             last_recorded_no: 0,
             buffer: Vec::with_capacity(ROW_BUFFER_SIZE),
         }
@@ -104,12 +187,23 @@ impl TrnSysType {
 
         self.db_provider = Some(provider);
 
-        let db = self.db_provider.as_mut().unwrap();
+        let db = self.db_provider.as_ref().unwrap();
 
         db.ensure_table(&params.table_name, input_names, None)?;
 
         // Remove existing variant data
         db.remove_variant(&params.table_name, &params.variant_name)?;
+
+        // Move the provider into a background writer thread
+        let writer = BackgroundWriter::new(
+            self.db_provider.take().unwrap(),
+            params.table_name.clone(),
+            MetaCol::Variant.as_str().to_string(),
+            MetaCol::SimulationTime.as_str().to_string(),
+            params.input_names.clone(),
+            params.variant_name.clone(),
+        );
+        self.writer = Some(writer);
 
         Ok(())
     }
@@ -120,6 +214,9 @@ impl TrnSysType {
         // Do all of the Last Call Manipulations Here
         info!("Simulation Ends");
         self.write_buffer()?;
+        if let Some(mut writer) = self.writer.take() {
+            writer.flush()?;
+        }
         self.db_provider = None;
         Ok(())
     }
@@ -187,24 +284,19 @@ impl TrnSysType {
             return Ok(());
         }
         let row_count = self.buffer.len();
-        let db_provider = self.db_provider.as_mut().unwrap();
-        let params = self.parameters.as_ref().unwrap();
 
-        // Extract data in columnar form — avoids type-erased Box<dyn InputParameter> overhead
+        // Extract data in columnar form
         let sim_times: Vec<f64> = self.buffer.iter().map(|r| r.sim_time).collect();
         let input_rows: Vec<Vec<f64>> = self.buffer.drain(..).map(|r| r.input_data).collect();
 
-        db_provider.columnar_batch_insert(
-            &params.table_name,
-            MetaCol::Variant.as_str(),
-            MetaCol::SimulationTime.as_str(),
-            &params.input_names,
-            &params.variant_name,
-            &sim_times,
-            &input_rows,
-        )?;
+        if let Some(ref writer) = self.writer {
+            writer.send(WriteBatch {
+                sim_times,
+                input_rows,
+            })?;
+        }
 
-        info!("Wrote {} rows to {}", row_count, params.table_name);
+        info!("Queued {} rows for background write", row_count);
         Ok(())
     }
 }
