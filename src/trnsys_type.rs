@@ -13,7 +13,6 @@ use crate::trnsys::*;
 use odbc_api::Environment;
 use std::sync::LazyLock;
 use tracing::info;
-use tracing_subscriber::fmt::format;
 
 static ENVIRONMENT: LazyLock<Environment> = LazyLock::new(|| Environment::new().unwrap());
 
@@ -147,8 +146,9 @@ impl TrnSysType {
         // Insert data
         let row = state.inputs.iter().map(|v| v.value).collect::<Vec<f64>>();
         let mut buffer_row = DataBuffer::new(Some(row));
+        buffer_row.sim_time = state.simulation_time;
 
-        // Insert meta columns
+        // Insert meta columns (kept for compatibility with into_insertable)
         let params = self.parameters.as_ref().unwrap();
         buffer_row.insert_meta_col(MetaCol::SimulationTime, get_simulation_time());
         buffer_row.insert_meta_col(MetaCol::Variant, params.variant_name.clone());
@@ -183,27 +183,28 @@ impl TrnSysType {
     }
 
     fn write_buffer(&mut self) -> Result<(), TrnSysError> {
-        if self.buffer.len() == 0 {
+        if self.buffer.is_empty() {
             return Ok(());
         }
+        let row_count = self.buffer.len();
         let db_provider = self.db_provider.as_mut().unwrap();
         let params = self.parameters.as_ref().unwrap();
 
-        // Compute column names once from the first buffered row
-        let col_names = self
-            .buffer
-            .first()
-            .map(|r| r.get_col_names(params.input_names.clone()))
-            .unwrap();
+        // Extract data in columnar form — avoids type-erased Box<dyn InputParameter> overhead
+        let sim_times: Vec<f64> = self.buffer.iter().map(|r| r.sim_time).collect();
+        let input_rows: Vec<Vec<f64>> = self.buffer.drain(..).map(|r| r.input_data).collect();
 
-        let row_insertables = self
-            .buffer
-            .drain(..)
-            .map(|row| row.into_insertable())
-            .collect::<Vec<_>>();
+        db_provider.columnar_batch_insert(
+            &params.table_name,
+            MetaCol::Variant.as_str(),
+            MetaCol::SimulationTime.as_str(),
+            &params.input_names,
+            &params.variant_name,
+            &sim_times,
+            &input_rows,
+        )?;
 
-        db_provider.batch_insert_data(&params.table_name, col_names, row_insertables)?;
-
+        info!("Wrote {} rows to {}", row_count, params.table_name);
         Ok(())
     }
 }

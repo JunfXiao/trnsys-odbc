@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct DataBuffer {
     __private: (),
+    pub sim_time: f64,
     pub input_data: Vec<f64>,
     pub meta_cols: Arc<Mutex<BTreeMap<MetaCol, Box<dyn InputParameter>>>>,
 }
@@ -15,6 +16,7 @@ impl DataBuffer {
     pub fn new(input_data: Option<Vec<f64>>) -> Self {
         DataBuffer {
             __private: (),
+            sim_time: 0.0,
             input_data: input_data.unwrap_or_default(),
             meta_cols: Arc::new(Mutex::new(BTreeMap::new())),
         }

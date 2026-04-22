@@ -20,12 +20,9 @@ use tracing_subscriber::{
     registry::Registry,
 };
 
-/// The threshold level for trnsys logging.
-#[cfg(debug_assertions)]
-const TRNSYS_LOG_LEVEL: Level = Level::DEBUG;
-/// The threshold level for trnsys logging.
-#[cfg(not(debug_assertions))]
-const TRNSYS_LOG_LEVEL: Level = Level::WARN;
+
+const TRNSYS_LOG_LEVEL: Level = Level::INFO;
+
 
 /// Custom function to handle trnsys logging.
 ///
@@ -209,7 +206,10 @@ pub fn init_tracing(file_name: Option<String>) {
     let local_time = OffsetTime::local_rfc_3339().expect("Failed to get local time offset");
 
     // Set up the filter (can be controlled via the RUST_LOG environment variable)
-    let filter = EnvFilter::from_env("TRNSYS_HAMT_RS").add_directive("info".parse().unwrap());
+    #[cfg(debug_assertions)]
+    let filter = EnvFilter::from_env("TRNSYS_ODBC_RS").add_directive("debug".parse().unwrap());
+    #[cfg(not(debug_assertions))]
+    let filter = EnvFilter::from_env("TRNSYS_ODBC_RS").add_directive("info".parse().unwrap());
 
     // Formatting Layer: output to both file and stdout
     let fmt_layer = fmt::layer()

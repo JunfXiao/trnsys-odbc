@@ -7,6 +7,7 @@ use crate::database::path::clean_and_ensure_path;
 use crate::impl_odbc_provider;
 use crate::trnsys::error::TrnSysError;
 use indexmap::IndexSet;
+use odbc_api::buffers::BufferDesc;
 use odbc_api::parameter::InputParameter;
 use odbc_api::sys::{Date, Time, Timestamp};
 use odbc_api::{Connection, ConnectionOptions, Cursor, DataType, Environment, ResultSetMetadata};
@@ -175,6 +176,102 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         Ok(())
     }
 
+    /// Bulk-insert rows using ODBC columnar array parameter binding.
+    /// Sends all rows in a single SQLExecute call instead of one per row.
+    ///
+    /// Column layout (fixed): variant_col (text), simtime_col (f64), input_col_names... (f64).
+    fn columnar_batch_insert(
+        &self,
+        table: &str,
+        variant_col: &str,
+        simtime_col: &str,
+        input_col_names: &[String],
+        variant_value: &str,
+        sim_times: &[f64],
+        input_rows: &[Vec<f64>],
+    ) -> Result<(), TrnSysError> {
+        let n = sim_times.len();
+        if n == 0 {
+            return Ok(());
+        }
+        let conn = self.get_connection()?;
+
+        // Build INSERT query with all column names
+        let col_name_field = std::iter::once(variant_col)
+            .chain(std::iter::once(simtime_col))
+            .chain(input_col_names.iter().map(String::as_str))
+            .map(|name| self.format_identifier(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let num_cols = 2 + input_col_names.len();
+        let placeholders = vec!["?"; num_cols].join(", ");
+        let query = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table, col_name_field, placeholders
+        );
+        debug!("Columnar Insert Query: {}", query);
+
+        conn.set_autocommit(false)?;
+        let result = (|| -> Result<(), TrnSysError> {
+            // Build buffer descriptors: text for variant, f64 for simtime and all inputs
+            let mut descriptions: Vec<BufferDesc> = Vec::with_capacity(num_cols);
+            descriptions.push(BufferDesc::Text {
+                max_str_len: variant_value.len().max(1),
+            });
+            descriptions.push(BufferDesc::F64 { nullable: false });
+            for _ in input_col_names {
+                descriptions.push(BufferDesc::F64 { nullable: false });
+            }
+
+            let prepared = conn.prepare(&query)?;
+            let mut inserter = prepared.into_column_inserter(n, descriptions)?;
+            inserter.set_num_rows(n);
+
+            // Fill Variant column (col 0) — same value repeated for all rows
+            {
+                let variant_bytes = variant_value.as_bytes();
+                let mut col = inserter
+                    .column_mut(0)
+                    .as_text_view()
+                    .expect("variant column must be text");
+                for i in 0..n {
+                    col.set_cell(i, Some(variant_bytes));
+                }
+            }
+
+            // Fill SimTime column (col 1)
+            {
+                let col = inserter
+                    .column_mut(1)
+                    .as_slice::<f64>()
+                    .expect("simtime column must be f64");
+                col.copy_from_slice(sim_times);
+            }
+
+            // Fill input data columns (cols 2..N) — transpose from row-major to column-major
+            for (col_idx, _) in input_col_names.iter().enumerate() {
+                let col = inserter
+                    .column_mut(2 + col_idx)
+                    .as_slice::<f64>()
+                    .expect("input column must be f64");
+                for (row_idx, row) in input_rows.iter().enumerate() {
+                    col[row_idx] = row[col_idx];
+                }
+            }
+
+            inserter.execute()?;
+            Ok(())
+        })();
+
+        if result.is_err() {
+            let _ = conn.rollback();
+        } else {
+            conn.commit()?;
+        }
+        conn.set_autocommit(true)?;
+        result
+    }
+
     fn insert_data(
         &self,
         table: &str,
@@ -227,25 +324,21 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         );
         debug!("Insert Query: {}", query);
 
-        // Transactional chunking for speed
-        let chunk = self.preferred_insert_chunk_size();
-        let _ = conn.execute("BEGIN TRANSACTION", ());
-        {
+        conn.set_autocommit(false)?;
+        let result = (|| -> Result<(), TrnSysError> {
             let mut statement = conn.prepare(&query)?;
-            if rows.len() <= chunk {
-                for row in rows {
-                    statement.execute(row.as_slice())?;
-                }
-            } else {
-                for batch in rows.chunks(chunk) {
-                    for row in batch {
-                        statement.execute(row.as_slice())?;
-                    }
-                }
+            for row in rows {
+                statement.execute(row.as_slice())?;
             }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = conn.rollback();
+        } else {
+            conn.commit()?;
         }
-        let _ = conn.execute("COMMIT", ());
-        Ok(())
+        conn.set_autocommit(true)?;
+        result
     }
 
     /// Atomically replace all rows for a variant and insert the given rows.
@@ -258,17 +351,13 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         rows: Vec<Vec<Box<dyn InputParameter>>>,
     ) -> Result<(), TrnSysError> {
         let conn = self.get_connection()?;
-        let _ = conn.execute("BEGIN TRANSACTION", ());
+
         let del = format!(
             "DELETE FROM {} WHERE {} = '{}'",
             table,
             self.format_identifier(variant_col),
             variant_value.replace("'", "''")
         );
-        info!("Replace-Variant: {}", del);
-        conn.execute(&del, ())?;
-
-        // Reuse batch_insert_data to insert in the same transaction by not starting new tx
         let col_name_field = col_names
             .iter()
             .map(|name| self.format_identifier(name.as_str()))
@@ -282,23 +371,24 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             "INSERT INTO {} ({}) VALUES ({})",
             table, col_name_field, placeholders
         );
-        let chunk = self.preferred_insert_chunk_size();
-        {
+
+        conn.set_autocommit(false)?;
+        let result = (|| -> Result<(), TrnSysError> {
+            info!("Replace-Variant: {}", del);
+            conn.execute(&del, ())?;
             let mut statement = conn.prepare(&query)?;
-            if rows.len() <= chunk {
-                for row in rows {
-                    statement.execute(row.as_slice())?;
-                }
-            } else {
-                for batch in rows.chunks(chunk) {
-                    for row in batch {
-                        statement.execute(row.as_slice())?;
-                    }
-                }
+            for row in rows {
+                statement.execute(row.as_slice())?;
             }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = conn.rollback();
+        } else {
+            conn.commit()?;
         }
-        let _ = conn.execute("COMMIT", ());
-        Ok(())
+        conn.set_autocommit(true)?;
+        result
     }
 
     fn query_data(
