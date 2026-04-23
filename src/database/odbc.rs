@@ -16,6 +16,13 @@ use std::sync::{Mutex, MutexGuard};
 use strum::IntoEnumIterator;
 use tracing::{debug, info};
 
+pub const VARIANTS_TABLE: &str = "variants";
+pub const VARIANT_ID_COL: &str = "variant_id";
+pub const VARIANT_NAME_COL: &str = "variant_name";
+pub const COMPLETE_COL: &str = "complete";
+pub const CREATED_AT_COL: &str = "created_at";
+pub const UPDATED_AT_COL: &str = "updated_at";
+
 pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
     fn set_connection(&mut self, connection: Connection<'c>) -> Result<(), TrnSysError>;
     fn setup_by_conn_str(
@@ -129,35 +136,186 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             );
             debug!("Create Table Query: {}", create_table_query);
             connection.execute(&create_table_query, (), None)?;
+
+            // Add a non-unique index on variant_id for fast DELETE/SELECT by variant.
+            // Best-effort: some backends (e.g. Excel) don't support CREATE INDEX.
+            let index_name = format!("idx_{}_variant_id", table_name);
+            let index_query = format!(
+                "CREATE INDEX {} ON {} ({})",
+                self.format_identifier(&index_name),
+                self.format_identifier(table_name),
+                self.format_identifier(MetaCol::VariantId.as_str()),
+            );
+            debug!("Create Index Query: {}", index_query);
+            if let Err(e) = connection.execute(&index_query, (), None) {
+                debug!("CREATE INDEX skipped ({}): {}", index_name, e);
+            }
         }
         Ok(())
     }
 
-    fn remove_variant(&self, table_name: &str, variant_name: &str) -> Result<(), TrnSysError> {
+    /// Create the variants lookup table if it doesn't exist.
+    /// Schema: variant_id AUTOINCREMENT PK, variant_name TEXT, created_at DATETIME, updated_at DATETIME.
+    fn ensure_variants_table(&self) -> Result<(), TrnSysError> {
         let connection = self.get_connection()?;
-        let query = format!(
-            "DELETE FROM {} WHERE {} = '{}'",
-            table_name,
-            self.format_identifier(MetaCol::Variant.as_str()),
-            variant_name
+
+        let mut exists = false;
+        for row in connection.tables("", "", VARIANTS_TABLE, "TABLE")? {
+            let row = row?;
+            if let Ok(Some(name)) = row.table.as_str() {
+                if name == VARIANTS_TABLE {
+                    exists = true;
+                    break;
+                }
+            }
+        }
+        if exists {
+            return Ok(());
+        }
+
+        let other_cols = vec![
+            ColDef::new(VARIANT_NAME_COL, ColDataType::Text, true, false),
+            ColDef::new(COMPLETE_COL, ColDataType::Boolean, true, false),
+            ColDef::new(CREATED_AT_COL, ColDataType::DateTime, true, false),
+            ColDef::new(UPDATED_AT_COL, ColDataType::DateTime, true, false),
+        ];
+        let cols_def = std::iter::once(self.autoincrement_pk_def(VARIANT_ID_COL))
+            .chain(other_cols.iter().map(|c| self.get_col_def_str(c)))
+            .collect::<Vec<_>>()
+            .join(", \n");
+        let create = format!(
+            "CREATE TABLE {} ({})",
+            self.format_identifier(VARIANTS_TABLE),
+            cols_def
         );
-        info!("Remove Variant Query: {}", query);
-        connection.execute(&query, (), None)?;
-        info!("Variant removed.");
+        debug!("Create Variants Table: {}", create);
+        connection.execute(&create, (), None)?;
+        Ok(())
+    }
+
+    /// Look up a variant by name; insert if missing. Returns the variant_id.
+    /// Updates `updated_at` on each call so the lookup table tracks last use.
+    fn ensure_variant(&self, variant_name: &str) -> Result<i32, TrnSysError> {
+        let conn = self.get_connection()?;
+
+        let select = format!(
+            "SELECT {} FROM {} WHERE {} = ?",
+            self.format_identifier(VARIANT_ID_COL),
+            self.format_identifier(VARIANTS_TABLE),
+            self.format_identifier(VARIANT_NAME_COL),
+        );
+
+        let lookup = |conn: &MutexGuard<Connection>| -> Result<Option<i32>, TrnSysError> {
+            let mut stmt = conn.prepare(&select)?;
+            let params: Vec<Box<dyn InputParameter>> =
+                vec![Box::new(variant_name.to_string().into_parameter())];
+            let cursor = stmt.execute(params.as_slice())?;
+            match cursor {
+                Some(mut cursor) => match cursor.next_row()? {
+                    Some(mut row) => {
+                        let mut id: i32 = 0;
+                        if row.get_data(1, &mut id).is_ok() {
+                            Ok(Some(id))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    None => Ok(None),
+                },
+                None => Ok(None),
+            }
+        };
+
+        if let Some(id) = lookup(&conn)? {
+            let update = format!(
+                "UPDATE {} SET {} = 0, {} = {} WHERE {} = ?",
+                self.format_identifier(VARIANTS_TABLE),
+                self.format_identifier(COMPLETE_COL),
+                self.format_identifier(UPDATED_AT_COL),
+                self.current_timestamp_expr(),
+                self.format_identifier(VARIANT_ID_COL),
+            );
+            let mut stmt = conn.prepare(&update)?;
+            let params: Vec<Box<dyn InputParameter>> = vec![Box::new(id.into_parameter())];
+            stmt.execute(params.as_slice())?;
+            debug!("Variant '{}' already exists with id {}", variant_name, id);
+            return Ok(id);
+        }
+
+        // Insert — variant_id is auto-generated by the DB
+        let ts = self.current_timestamp_expr();
+        let insert = format!(
+            "INSERT INTO {} ({}, {}, {}, {}) VALUES (?, 0, {ts}, {ts})",
+            self.format_identifier(VARIANTS_TABLE),
+            self.format_identifier(VARIANT_NAME_COL),
+            self.format_identifier(COMPLETE_COL),
+            self.format_identifier(CREATED_AT_COL),
+            self.format_identifier(UPDATED_AT_COL),
+        );
+        let mut stmt = conn.prepare(&insert)?;
+        let params: Vec<Box<dyn InputParameter>> =
+            vec![Box::new(variant_name.to_string().into_parameter())];
+        stmt.execute(params.as_slice())?;
+
+        // Read back the auto-generated id
+        let id = lookup(&conn)?.ok_or_else(|| {
+            TrnSysError::GeneralError(format!(
+                "Failed to retrieve auto-generated variant_id for '{}'",
+                variant_name
+            ))
+        })?;
+        info!("Inserted new variant '{}' with id {}", variant_name, id);
+        Ok(id)
+    }
+
+    /// Mark a variant as complete (sets complete = 1, updates updated_at).
+    fn mark_variant_complete(&self, variant_id: i32) -> Result<(), TrnSysError> {
+        let conn = self.get_connection()?;
+        let update = format!(
+            "UPDATE {} SET {} = 1, {} = {} WHERE {} = ?",
+            self.format_identifier(VARIANTS_TABLE),
+            self.format_identifier(COMPLETE_COL),
+            self.format_identifier(UPDATED_AT_COL),
+            self.current_timestamp_expr(),
+            self.format_identifier(VARIANT_ID_COL),
+        );
+        let mut stmt = conn.prepare(&update)?;
+        let params: Vec<Box<dyn InputParameter>> = vec![Box::new(variant_id.into_parameter())];
+        stmt.execute(params.as_slice())?;
+        info!("Marked variant_id={} as complete", variant_id);
+        Ok(())
+    }
+
+    /// Delete all rows for the given variant_id from the data table.
+    fn remove_variant_data(&self, table_name: &str, variant_id: i32) -> Result<(), TrnSysError> {
+        let conn = self.get_connection()?;
+        let query = format!(
+            "DELETE FROM {} WHERE {} = ?",
+            self.format_identifier(table_name),
+            self.format_identifier(MetaCol::VariantId.as_str()),
+        );
+        info!(
+            "Remove Variant Data: {} (variant_id={})",
+            query, variant_id
+        );
+        let mut stmt = conn.prepare(&query)?;
+        let params: Vec<Box<dyn InputParameter>> = vec![Box::new(variant_id.into_parameter())];
+        stmt.execute(params.as_slice())?;
+        info!("Variant data removed.");
         Ok(())
     }
 
     /// Bulk-insert rows using ODBC columnar array parameter binding.
     /// Sends all rows in a single SQLExecute call instead of one per row.
     ///
-    /// Column layout (fixed): variant_col (text), simtime_col (f64), input_col_names... (f64).
+    /// Column layout (fixed): variant_id_col (i32), simtime_col (f64), input_col_names... (f64).
     fn columnar_batch_insert(
         &self,
         table: &str,
-        variant_col: &str,
+        variant_id_col: &str,
         simtime_col: &str,
         input_col_names: &[String],
-        variant_value: &str,
+        variant_id: i32,
         sim_times: &[f64],
         input_rows: &[Vec<f64>],
     ) -> Result<(), TrnSysError> {
@@ -168,7 +326,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         let conn = self.get_connection()?;
 
         // Build INSERT query with all column names
-        let col_name_field = std::iter::once(variant_col)
+        let col_name_field = std::iter::once(variant_id_col)
             .chain(std::iter::once(simtime_col))
             .chain(input_col_names.iter().map(String::as_str))
             .map(|name| self.format_identifier(name))
@@ -190,7 +348,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         // Some drivers (e.g. MS Access) silently ignore SQL_ATTR_PARAMSET_SIZE,
         // so we check row_count after execute and fall back to row-by-row if needed.
         let mut descriptions: Vec<BindParamDesc> = Vec::with_capacity(num_cols);
-        descriptions.push(BindParamDesc::text(variant_value.len().max(1)));
+        descriptions.push(BindParamDesc::i32(false));
         descriptions.push(BindParamDesc::f64(false));
         for _ in input_col_names {
             descriptions.push(BindParamDesc::f64(false));
@@ -202,15 +360,14 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
                 let mut inserter = prepared.column_inserter(n, descriptions)?;
                 inserter.set_num_rows(n);
 
-                // Fill Variant column (col 0)
+                // Fill variant_id column (col 0) — broadcast single i32 value
                 {
-                    let variant_bytes = variant_value.as_bytes();
-                    let mut col = inserter
+                    let col = inserter
                         .column_mut(0)
-                        .as_text_view()
-                        .expect("variant column must be text");
+                        .as_slice::<i32>()
+                        .expect("variant_id column must be i32");
                     for i in 0..n {
-                        col.set_cell(i, Some(variant_bytes));
+                        col[i] = variant_id;
                     }
                 }
                 // Fill SimTime column (col 1)
@@ -258,7 +415,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
                     for row_idx in 0..n {
                         let mut params: Vec<Box<dyn InputParameter>> =
                             Vec::with_capacity(num_cols);
-                        params.push(Box::new(variant_value.to_string().into_parameter()));
+                        params.push(Box::new(variant_id.into_parameter()));
                         params.push(Box::new(sim_times[row_idx].into_parameter()));
                         for col_idx in 0..input_col_names.len() {
                             params.push(Box::new(input_rows[row_idx][col_idx].into_parameter()));

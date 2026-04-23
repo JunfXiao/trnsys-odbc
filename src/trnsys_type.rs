@@ -37,10 +37,10 @@ impl BackgroundWriter {
     fn new(
         db_provider: Box<dyn OdbcProvider<'static>>,
         table_name: String,
-        variant_col: String,
+        variant_id_col: String,
         simtime_col: String,
         input_col_names: Vec<String>,
-        variant_name: String,
+        variant_id: i32,
     ) -> Self {
         let (tx, rx) = mpsc::sync_channel::<WriteBatch>(CHANNEL_CAPACITY);
         let handle = thread::spawn(move || -> Result<(), TrnSysError> {
@@ -48,10 +48,10 @@ impl BackgroundWriter {
                 let t = std::time::Instant::now();
                 db_provider.columnar_batch_insert(
                     &table_name,
-                    &variant_col,
+                    &variant_id_col,
                     &simtime_col,
                     &input_col_names,
-                    &variant_name,
+                    variant_id,
                     &batch.sim_times,
                     &batch.input_rows,
                 )?;
@@ -61,6 +61,8 @@ impl BackgroundWriter {
                     t.elapsed()
                 );
             }
+            // All batches written — mark the variant as complete
+            db_provider.mark_variant_complete(variant_id)?;
             Ok(())
         });
         BackgroundWriter {
@@ -189,19 +191,27 @@ impl TrnSysType {
 
         let db = self.db_provider.as_ref().unwrap();
 
+        // Ensure the shared variants lookup table, then resolve this run's variant_id.
+        db.ensure_variants_table()?;
+        let variant_id = db.ensure_variant(&params.variant_name)?;
+        info!(
+            "Resolved variant '{}' -> variant_id={}",
+            params.variant_name, variant_id
+        );
+
         db.ensure_table(&params.table_name, input_names, None)?;
 
-        // Remove existing variant data
-        db.remove_variant(&params.table_name, &params.variant_name)?;
+        // Clear any existing rows for this variant
+        db.remove_variant_data(&params.table_name, variant_id)?;
 
         // Move the provider into a background writer thread
         let writer = BackgroundWriter::new(
             self.db_provider.take().unwrap(),
             params.table_name.clone(),
-            MetaCol::Variant.as_str().to_string(),
+            MetaCol::VariantId.as_str().to_string(),
             MetaCol::SimulationTime.as_str().to_string(),
             params.input_names.clone(),
-            params.variant_name.clone(),
+            variant_id,
         );
         self.writer = Some(writer);
 
@@ -244,11 +254,6 @@ impl TrnSysType {
         let row = state.inputs.iter().map(|v| v.value).collect::<Vec<f64>>();
         let mut buffer_row = DataBuffer::new(Some(row));
         buffer_row.sim_time = state.simulation_time;
-
-        // Insert meta columns (kept for compatibility with into_insertable)
-        let params = self.parameters.as_ref().unwrap();
-        buffer_row.insert_meta_col(MetaCol::SimulationTime, get_simulation_time());
-        buffer_row.insert_meta_col(MetaCol::Variant, params.variant_name.clone());
         self.buffer.push(buffer_row);
 
         if self.is_time_to_write_buffer(state.simulation_time) {

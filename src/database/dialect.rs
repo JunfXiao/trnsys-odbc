@@ -13,6 +13,10 @@ pub trait SqlDialect {
         "DOUBLE".to_string()
     }
 
+    fn get_boolean_type(&self) -> String {
+        "BOOLEAN".to_string()
+    }
+
     fn get_datetime_type(&self) -> String {
         "DATETIME".to_string()
     }
@@ -31,6 +35,20 @@ pub trait SqlDialect {
         400
     }
 
+    /// SQL expression that evaluates to the current timestamp.
+    /// Defaults to the SQL-standard `CURRENT_TIMESTAMP`; MS Access overrides to `Now()`.
+    fn current_timestamp_expr(&self) -> &'static str {
+        "CURRENT_TIMESTAMP"
+    }
+
+    /// Full column definition for an auto-increment primary key column.
+    fn autoincrement_pk_def(&self, col_name: &str) -> String {
+        format!(
+            "{} INTEGER PRIMARY KEY AUTOINCREMENT",
+            self.format_identifier(col_name)
+        )
+    }
+
     fn get_col_def_str(&self, col_def: &ColDef) -> String {
         let mut data_type_str = match col_def.data_type {
             ColDataType::Text => self.get_text_type(),
@@ -41,6 +59,7 @@ pub trait SqlDialect {
                     self.get_integer_type()
                 }
             }
+            ColDataType::Boolean => self.get_boolean_type(),
             ColDataType::DateTime => self.get_datetime_type(),
         }
         .to_owned();

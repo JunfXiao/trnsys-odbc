@@ -17,6 +17,10 @@ impl SqlDialect for SqliteProvider<'_> {
     fn get_decimal_type(&self) -> String {
         "REAL".to_string()
     }
+
+    fn get_boolean_type(&self) -> String {
+        "INTEGER".to_string()
+    }
 }
 
 impl_odbc_provider!(SqliteProvider);

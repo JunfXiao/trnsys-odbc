@@ -85,7 +85,7 @@ impl TryFrom<&TrnSysState> for Parameters {
             table_name,
             input_names,
             variant_name,
-            primary_keys: vec![MetaCol::SimulationTime, MetaCol::Variant],
+            primary_keys: vec![MetaCol::SimulationTime, MetaCol::VariantId],
         };
 
         info!("Parameters: {:?}", parameters);

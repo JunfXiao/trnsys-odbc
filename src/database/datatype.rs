@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 pub enum ColDataType {
     Text,
     Number { decimal: bool },
+    Boolean,
     DateTime,
 }
 
@@ -43,6 +44,7 @@ impl ColDef {
         match &self.data_type {
             ColDataType::Text => BufferDesc::Text { max_str_len: 255 },
             ColDataType::Number { decimal } => BufferDesc::F64 { nullable: true },
+            ColDataType::Boolean => BufferDesc::Bit { nullable: true },
             ColDataType::DateTime => BufferDesc::Date { nullable: true },
         }
     }

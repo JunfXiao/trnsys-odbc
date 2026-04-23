@@ -15,8 +15,23 @@ impl SqlDialect for MsAccessProvider<'_> {
         "FLOAT".to_string()
     }
 
+    fn get_boolean_type(&self) -> String {
+        "BIT".to_string()
+    }
+
     fn preferred_insert_chunk_size(&self) -> usize {
         200
+    }
+
+    fn current_timestamp_expr(&self) -> &'static str {
+        "Now()"
+    }
+
+    fn autoincrement_pk_def(&self, col_name: &str) -> String {
+        format!(
+            "{} AUTOINCREMENT(0, 1) PRIMARY KEY",
+            self.format_identifier(col_name)
+        )
     }
 }
 

@@ -24,6 +24,10 @@ impl SqlDialect for PostgreSQLProvider<'_> {
     fn format_identifier(&self, identifier: &str) -> String {
         format!("\"{}\"", identifier.replace("\"", "\"\""))
     }
+
+    fn autoincrement_pk_def(&self, col_name: &str) -> String {
+        format!("{} SERIAL PRIMARY KEY", self.format_identifier(col_name))
+    }
 }
 
 impl_odbc_provider!(PostgreSQLProvider);
