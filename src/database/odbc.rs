@@ -405,25 +405,57 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
                 conn.commit()?;
             }
             _ => {
-                // Array binding not fully supported — rollback and retry row-by-row
-                let _ = conn.rollback();
-                info!("Columnar insert incomplete — falling back to row-by-row");
+                conn.rollback()?;
+
+                // Build each row as a comma-separated literal value string.
+                let mut value_rows: Vec<String> = Vec::with_capacity(n);
+                for row_idx in 0..n {
+                    let mut vals = Vec::with_capacity(num_cols);
+                    vals.push(format!("{}", variant_id));
+                    vals.push(format!("{}", sim_times[row_idx]));
+                    for col_idx in 0..input_col_names.len() {
+                        vals.push(format!("{}", input_rows[row_idx][col_idx]));
+                    }
+                    value_rows.push(vals.join(", "));
+                }
 
                 conn.set_autocommit(false)?;
-                let result = (|| -> Result<(), TrnSysError> {
-                    let mut statement = conn.prepare(&query)?;
-                    for row_idx in 0..n {
-                        let mut params: Vec<Box<dyn InputParameter>> =
-                            Vec::with_capacity(num_cols);
-                        params.push(Box::new(variant_id.into_parameter()));
-                        params.push(Box::new(sim_times[row_idx].into_parameter()));
-                        for col_idx in 0..input_col_names.len() {
-                            params.push(Box::new(input_rows[row_idx][col_idx].into_parameter()));
+                let result = if self.supports_multi_row_insert() {
+                    // Multi-row VALUES: INSERT INTO t (cols) VALUES (...), (...), ...
+                    info!("Columnar insert incomplete — falling back to multi-row VALUES");
+                    let chunk_size = self.max_rows_per_multi_insert();
+                    (|| -> Result<(), TrnSysError> {
+                        for (i, chunk) in value_rows.chunks(chunk_size).enumerate() {
+                            let body = self.format_multi_row_insert_body(chunk);
+                            let sql = format!(
+                                "INSERT INTO {} ({}) {}",
+                                table, col_name_field, body
+                            );
+                            if i == 0 {
+                                debug!("[multi-row] first SQL ({} chars): {}", sql.len(), &sql[..sql.len().min(500)]);
+                            }
+                            let t = std::time::Instant::now();
+                            conn.execute(&sql, (), None)?;
+                            debug!("[multi-row] chunk {} ({} rows): {:?}", i, chunk.len(), t.elapsed());
                         }
-                        statement.execute(params.as_slice())?;
-                    }
-                    Ok(())
-                })();
+                        Ok(())
+                    })()
+                } else {
+                    // Single-row literal INSERT via SQLExecDirect — no parameter binding
+                    // overhead (saves N×num_cols SQLBindParameter calls).
+                    info!("Columnar insert incomplete — falling back to literal INSERT per row");
+                    let insert_prefix = format!(
+                        "INSERT INTO {} ({}) VALUES ",
+                        table, col_name_field
+                    );
+                    (|| -> Result<(), TrnSysError> {
+                        for row in &value_rows {
+                            let sql = format!("{}({})", insert_prefix, row);
+                            conn.execute(&sql, (), None)?;
+                        }
+                        Ok(())
+                    })()
+                };
                 if result.is_err() {
                     let _ = conn.rollback();
                 } else {

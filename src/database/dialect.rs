@@ -41,6 +41,29 @@ pub trait SqlDialect {
         "CURRENT_TIMESTAMP"
     }
 
+    /// Whether the dialect supports multi-row INSERT (e.g. `VALUES (...), (...)`).
+    /// Access returns false — it uses individual INSERT with literal values instead.
+    fn supports_multi_row_insert(&self) -> bool {
+        true
+    }
+
+    /// Maximum number of rows per multi-row INSERT statement.
+    fn max_rows_per_multi_insert(&self) -> usize {
+        1000
+    }
+
+    /// Format multiple rows of literal values into an INSERT body.
+    /// Each entry in `rows` is a comma-separated value list (e.g. "1, 0.5, 3.14").
+    /// Default emits `VALUES (row1), (row2), ...`; Access overrides to `SELECT ... UNION ALL ...`.
+    fn format_multi_row_insert_body(&self, rows: &[String]) -> String {
+        let values = rows
+            .iter()
+            .map(|r| format!("({})", r))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("VALUES {}", values)
+    }
+
     /// Full column definition for an auto-increment primary key column.
     fn autoincrement_pk_def(&self, col_name: &str) -> String {
         format!(

@@ -23,6 +23,10 @@ impl SqlDialect for MsAccessProvider<'_> {
         200
     }
 
+    fn supports_multi_row_insert(&self) -> bool {
+        false
+    }
+
     fn current_timestamp_expr(&self) -> &'static str {
         "Now()"
     }
