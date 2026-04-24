@@ -20,11 +20,59 @@ impl SqlDialect for MsExcelProvider<'_> {
         "NUMBER".to_string()
     }
 
+    // Jet/ACE Excel driver rejects "BOOLEAN"; BIT is the accepted literal.
+    fn get_boolean_type(&self) -> String {
+        "BIT".to_string()
+    }
+
     fn support_nullability(&self) -> bool {
         false
     }
 
     fn support_primary_key(&self) -> bool {
+        false
+    }
+
+    fn supports_autoincrement(&self) -> bool {
+        false
+    }
+
+    // Jet Excel has no CURRENT_TIMESTAMP keyword; use the Jet Now() function.
+    fn current_timestamp_expr(&self) -> &'static str {
+        "Now()"
+    }
+
+    fn supports_transactions(&self) -> bool {
+        false
+    }
+
+    // Jet (Access/Excel) does not accept multi-row VALUES. Single-row inserts
+    // are used via the literal-fallback path in columnar_batch_insert.
+    fn supports_multi_row_insert(&self) -> bool {
+        false
+    }
+
+    // Excel CREATE TABLE rejects PRIMARY KEY and AUTOINCREMENT; emit a plain column.
+    fn autoincrement_pk_def(&self, col_name: &str) -> String {
+        format!(
+            "{} {}",
+            self.format_identifier(col_name),
+            self.get_integer_type()
+        )
+    }
+
+    // Use the named-range form `[name]` (created by CREATE TABLE) for DML.
+    // The named range carries the declared column types, so INSERTs write
+    // numeric values as numbers instead of text (which `[name$]` would do,
+    // since it bypasses the range's schema). Requires the table to already
+    // exist — which is true for our usage (CREATE TABLE runs first).
+    fn format_data_table(&self, table_name: &str) -> String {
+        self.format_identifier(table_name)
+    }
+
+    // Jet's Excel ISAM rejects DELETE entirely (both named-range and sheet
+    // forms). ensure_table falls back to DROP+CREATE when this returns false.
+    fn supports_delete(&self) -> bool {
         false
     }
 }

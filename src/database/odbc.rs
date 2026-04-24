@@ -23,6 +23,67 @@ pub const COMPLETE_COL: &str = "complete";
 pub const CREATED_AT_COL: &str = "created_at";
 pub const UPDATED_AT_COL: &str = "updated_at";
 
+/// Map an ODBC `DataType` (from catalog/result-set metadata) to our generic
+/// `ColDataType` so we can regenerate a CREATE TABLE statement for a table
+/// whose schema we discovered at runtime.
+fn map_odbc_data_type(dt: &DataType) -> ColDataType {
+    match dt {
+        DataType::TinyInt | DataType::SmallInt | DataType::Integer | DataType::BigInt => {
+            ColDataType::Number { decimal: false }
+        }
+        DataType::Float { .. }
+        | DataType::Real
+        | DataType::Double
+        | DataType::Decimal { .. }
+        | DataType::Numeric { .. } => ColDataType::Number { decimal: true },
+        DataType::Bit => ColDataType::Boolean,
+        DataType::Date | DataType::Timestamp { .. } | DataType::Time { .. } => ColDataType::DateTime,
+        _ => ColDataType::Text,
+    }
+}
+
+/// Scan the variants table and return the `variant_name` for the given id.
+/// Standalone helper so callers can reuse an already-held connection guard.
+fn lookup_variant_name_with_conn(
+    conn: &MutexGuard<Connection>,
+    variants_ref: &str,
+    variant_id: i32,
+) -> Result<Option<String>, TrnSysError> {
+    let select = format!("SELECT * FROM {}", variants_ref);
+    let Some(mut cursor) = conn.execute(&select, (), None)? else {
+        return Ok(None);
+    };
+    let num_cols = cursor.num_result_cols()? as u16;
+    let mut id_idx: Option<u16> = None;
+    let mut name_idx: Option<u16> = None;
+    for i in 1..=num_cols {
+        let col_name = cursor.col_name(i)?;
+        if col_name.eq_ignore_ascii_case(VARIANT_ID_COL) {
+            id_idx = Some(i);
+        } else if col_name.eq_ignore_ascii_case(VARIANT_NAME_COL) {
+            name_idx = Some(i);
+        }
+    }
+    let (Some(id_idx), Some(name_idx)) = (id_idx, name_idx) else {
+        return Ok(None);
+    };
+    while let Some(mut row) = cursor.next_row()? {
+        let mut id: i32 = 0;
+        if row.get_data(id_idx, &mut id).is_err() {
+            continue;
+        }
+        if id == variant_id {
+            let mut buf = Vec::new();
+            if row.get_text(name_idx, &mut buf)? {
+                if let Ok(name) = std::str::from_utf8(&buf) {
+                    return Ok(Some(name.to_string()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
     fn set_connection(&mut self, connection: Connection<'c>) -> Result<(), TrnSysError>;
     fn setup_by_conn_str(
@@ -196,6 +257,10 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
     /// Look up a variant by name; insert if missing. Returns the variant_id.
     /// Updates `updated_at` on each call so the lookup table tracks last use.
     fn ensure_variant(&self, variant_name: &str) -> Result<i32, TrnSysError> {
+        if !self.supports_autoincrement() {
+            return self.ensure_variant_direct(variant_name);
+        }
+
         let conn = self.get_connection()?;
 
         let select = format!(
@@ -257,7 +322,6 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             vec![Box::new(variant_name.to_string().into_parameter())];
         stmt.execute(params.as_slice())?;
 
-        // Read back the auto-generated id
         let id = lookup(&conn)?.ok_or_else(|| {
             TrnSysError::GeneralError(format!(
                 "Failed to retrieve auto-generated variant_id for '{}'",
@@ -268,40 +332,318 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
         Ok(id)
     }
 
+    /// Variant management using inline literals (SQLExecDirect).
+    /// Used by dialects whose ODBC drivers mishandle prepared statements against
+    /// freshly-created tables — notably Excel, which treats unknown column
+    /// identifiers as implicit parameter markers when no data rows exist yet.
+    fn ensure_variant_direct(&self, variant_name: &str) -> Result<i32, TrnSysError> {
+        let conn = self.get_connection()?;
+        let name_lit = self.format_text_literal(variant_name);
+        let ts = self.current_timestamp_expr();
+
+        // Excel references sheets as `[name$]`; named ranges created via
+        // CREATE TABLE are not always discoverable until reconnect, so use the
+        // sheet form here. `format_data_table` is a no-op for other dialects.
+        let variants_ref = self.format_data_table(VARIANTS_TABLE);
+
+        // Lookup by name. SELECT * avoids Excel's quirk of treating unknown
+        // column identifiers as parameter markers when the sheet has 0 rows.
+        let select = format!("SELECT * FROM {}", variants_ref);
+        let mut existing_id: Option<i32> = None;
+        let mut max_id: i32 = 0;
+        if let Some(mut cursor) = conn.execute(&select, (), None)? {
+            // Resolve column indices from the result-set metadata by name.
+            let num_cols = cursor.num_result_cols()? as u16;
+            let mut id_idx: Option<u16> = None;
+            let mut name_idx: Option<u16> = None;
+            for i in 1..=num_cols {
+                let col_name = cursor.col_name(i)?;
+                if col_name.eq_ignore_ascii_case(VARIANT_ID_COL) {
+                    id_idx = Some(i);
+                } else if col_name.eq_ignore_ascii_case(VARIANT_NAME_COL) {
+                    name_idx = Some(i);
+                }
+            }
+            let id_idx = id_idx.ok_or_else(|| {
+                TrnSysError::GeneralError(format!(
+                    "variants table missing column '{}'",
+                    VARIANT_ID_COL
+                ))
+            })?;
+            let name_idx = name_idx.ok_or_else(|| {
+                TrnSysError::GeneralError(format!(
+                    "variants table missing column '{}'",
+                    VARIANT_NAME_COL
+                ))
+            })?;
+
+            while let Some(mut row) = cursor.next_row()? {
+                let mut id: i32 = 0;
+                if row.get_data(id_idx, &mut id).is_err() {
+                    continue;
+                }
+                if id > max_id {
+                    max_id = id;
+                }
+                let mut buf = Vec::new();
+                if row.get_text(name_idx, &mut buf)? {
+                    if let Ok(name) = std::str::from_utf8(&buf) {
+                        if name == variant_name {
+                            existing_id = Some(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(id) = existing_id {
+            let update = format!(
+                "UPDATE {} SET {} = 0, {} = {} WHERE {} = {}",
+                variants_ref,
+                self.format_identifier(COMPLETE_COL),
+                self.format_identifier(UPDATED_AT_COL),
+                ts,
+                self.format_identifier(VARIANT_NAME_COL),
+                name_lit,
+            );
+            conn.execute(&update, (), None)?;
+            debug!("Variant '{}' already exists with id {}", variant_name, id);
+            return Ok(id);
+        }
+
+        let next_id = max_id + 1;
+        let insert = format!(
+            "INSERT INTO {} ({}, {}, {}, {}, {}) VALUES ({}, {}, 0, {ts}, {ts})",
+            variants_ref,
+            self.format_identifier(VARIANT_ID_COL),
+            self.format_identifier(VARIANT_NAME_COL),
+            self.format_identifier(COMPLETE_COL),
+            self.format_identifier(CREATED_AT_COL),
+            self.format_identifier(UPDATED_AT_COL),
+            next_id,
+            name_lit,
+        );
+        conn.execute(&insert, (), None)?;
+        info!("Inserted new variant '{}' with id {}", variant_name, next_id);
+        Ok(next_id)
+    }
+
     /// Mark a variant as complete (sets complete = 1, updates updated_at).
     fn mark_variant_complete(&self, variant_id: i32) -> Result<(), TrnSysError> {
         let conn = self.get_connection()?;
+        let variants_ref = self.format_data_table(VARIANTS_TABLE);
+        let ts = self.current_timestamp_expr();
+
+        // Excel stores cells with loose typing; `WHERE variant_id = <int>` can
+        // fail with "Data type mismatch" even when the column was declared as
+        // NUMBER. Match by variant_name instead for dialects without
+        // autoincrement (the variant_name is guaranteed unique in our schema).
+        let where_clause = if self.supports_autoincrement() {
+            format!("{} = {}", self.format_identifier(VARIANT_ID_COL), variant_id)
+        } else {
+            let name = lookup_variant_name_with_conn(&conn, &variants_ref, variant_id)?
+                .ok_or_else(|| {
+                    TrnSysError::GeneralError(format!(
+                        "Cannot mark complete: variant_id {} not found",
+                        variant_id
+                    ))
+                })?;
+            format!(
+                "{} = {}",
+                self.format_identifier(VARIANT_NAME_COL),
+                self.format_text_literal(&name)
+            )
+        };
+
         let update = format!(
-            "UPDATE {} SET {} = 1, {} = {} WHERE {} = ?",
-            self.format_identifier(VARIANTS_TABLE),
+            "UPDATE {} SET {} = 1, {} = {} WHERE {}",
+            variants_ref,
             self.format_identifier(COMPLETE_COL),
             self.format_identifier(UPDATED_AT_COL),
-            self.current_timestamp_expr(),
-            self.format_identifier(VARIANT_ID_COL),
+            ts,
+            where_clause,
         );
-        let mut stmt = conn.prepare(&update)?;
-        let params: Vec<Box<dyn InputParameter>> = vec![Box::new(variant_id.into_parameter())];
-        stmt.execute(params.as_slice())?;
+        conn.execute(&update, (), None)?;
         info!("Marked variant_id={} as complete", variant_id);
         Ok(())
     }
 
+
     /// Delete all rows for the given variant_id from the data table.
+    /// On dialects without DELETE support (e.g. Excel), the table is rebuilt:
+    /// rows for other variants are read, the table is dropped and recreated,
+    /// and the preserved rows are reinserted.
     fn remove_variant_data(&self, table_name: &str, variant_id: i32) -> Result<(), TrnSysError> {
+        if !self.supports_delete() {
+            return self.rebuild_table_preserving_other_variants(table_name, variant_id);
+        }
         let conn = self.get_connection()?;
         let query = format!(
-            "DELETE FROM {} WHERE {} = ?",
-            self.format_identifier(table_name),
+            "DELETE FROM {} WHERE {} = {}",
+            self.format_data_table(table_name),
             self.format_identifier(MetaCol::VariantId.as_str()),
+            variant_id,
         );
         info!(
             "Remove Variant Data: {} (variant_id={})",
             query, variant_id
         );
-        let mut stmt = conn.prepare(&query)?;
-        let params: Vec<Box<dyn InputParameter>> = vec![Box::new(variant_id.into_parameter())];
-        stmt.execute(params.as_slice())?;
+        conn.execute(&query, (), None)?;
         info!("Variant data removed.");
+        Ok(())
+    }
+
+    /// Read all rows for variants != `variant_id`, drop the table, recreate it
+    /// with the same schema (discovered from ODBC column metadata), and
+    /// reinsert the preserved rows. Used for Excel where ISAM blocks DELETE.
+    fn rebuild_table_preserving_other_variants(
+        &self,
+        table_name: &str,
+        variant_id: i32,
+    ) -> Result<(), TrnSysError> {
+        let conn = self.get_connection()?;
+        let data_table_ref = self.format_data_table(table_name);
+
+        // Read schema (names + types) and preserved rows in a single SELECT,
+        // using the cursor's result-set metadata. Avoids a separate catalog
+        // lookup and sidesteps Excel's i16 SQL-type encoding.
+        let select = format!("SELECT * FROM {}", data_table_ref);
+        let mut col_defs: Vec<ColDef> = Vec::new();
+        let mut col_order: Vec<String> = Vec::new();
+        let mut preserved_rows: Vec<Vec<Option<String>>> = Vec::new();
+        if let Some(mut cursor) = conn.execute(&select, (), None)? {
+            let num_cols = cursor.num_result_cols()? as u16;
+            let mut variant_id_idx: Option<u16> = None;
+            for i in 1..=num_cols {
+                let name = cursor.col_name(i)?;
+                let dt = cursor.col_data_type(i)?;
+                if name.eq_ignore_ascii_case(MetaCol::VariantId.as_str()) {
+                    variant_id_idx = Some(i);
+                }
+                col_order.push(name.clone());
+                col_defs.push(ColDef::new(&name, map_odbc_data_type(&dt), false, false));
+            }
+            let variant_id_idx = variant_id_idx.ok_or_else(|| {
+                TrnSysError::GeneralError(format!(
+                    "Cannot preserve rows: {} column not found in {}",
+                    MetaCol::VariantId.as_str(),
+                    table_name
+                ))
+            })?;
+            while let Some(mut row) = cursor.next_row()? {
+                // Some drivers (Excel) require reading columns in ascending
+                // order, so read every cell then filter on variant_id afterward.
+                let mut values: Vec<Option<String>> = Vec::with_capacity(num_cols as usize);
+                let mut vid: Option<i32> = None;
+                for i in 1..=num_cols {
+                    let dt = &col_defs[(i - 1) as usize].data_type;
+                    let v: Option<String> = match dt {
+                        ColDataType::Number { decimal: false } | ColDataType::Boolean => {
+                            let mut n: i64 = 0;
+                            match row.get_data(i, &mut n) {
+                                Ok(_) => Some(n.to_string()),
+                                Err(_) => None,
+                            }
+                        }
+                        ColDataType::Number { decimal: true } => {
+                            let mut f: f64 = 0.0;
+                            match row.get_data(i, &mut f) {
+                                Ok(_) => Some(f.to_string()),
+                                Err(_) => None,
+                            }
+                        }
+                        _ => {
+                            let mut buf = Vec::new();
+                            match row.get_text(i, &mut buf) {
+                                Ok(true) => Some(String::from_utf8_lossy(&buf).into_owned()),
+                                _ => None,
+                            }
+                        }
+                    };
+                    if i == variant_id_idx {
+                        vid = v.as_deref().and_then(|s| s.parse::<i32>().ok());
+                    }
+                    values.push(v);
+                }
+                if vid == Some(variant_id) {
+                    continue; // discard rows belonging to the current variant
+                }
+                preserved_rows.push(values);
+            }
+        }
+        if col_defs.is_empty() {
+            debug!("Table {} has no columns or does not exist; skipping rebuild", table_name);
+            return Ok(());
+        }
+        info!(
+            "Rebuilding {} — preserving {} rows from other variants (discarding variant_id={})",
+            table_name,
+            preserved_rows.len(),
+            variant_id
+        );
+
+        // 3. DROP the table and CREATE it again with the same schema.
+        let drop_sql = format!("DROP TABLE {}", self.format_identifier(table_name));
+        conn.execute(&drop_sql, (), None)?;
+        let create_cols = col_defs
+            .iter()
+            .map(|c| self.get_col_def_str(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let create_sql = format!(
+            "CREATE TABLE {} ({})",
+            self.format_identifier(table_name),
+            create_cols
+        );
+        conn.execute(&create_sql, (), None)?;
+
+        // 4. Reinsert preserved rows, mapping each string back to a typed SQL literal.
+        if !preserved_rows.is_empty() {
+            // Map introspected column names (case-sensitive as stored) to their ColDef.
+            let col_type_by_name: std::collections::HashMap<String, ColDataType> = col_defs
+                .iter()
+                .map(|c| (c.name.clone(), c.data_type.clone()))
+                .collect();
+            let insert_cols = col_order
+                .iter()
+                .map(|n| self.format_identifier(n))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let insert_prefix = format!(
+                "INSERT INTO {} ({}) VALUES ",
+                data_table_ref, insert_cols
+            );
+            for values in &preserved_rows {
+                let parts: Vec<String> = values
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, v)| match v {
+                        None => "NULL".to_string(),
+                        Some(s) => {
+                            let col_name = &col_order[idx];
+                            let dt = col_type_by_name
+                                .get(col_name)
+                                .cloned()
+                                .unwrap_or(ColDataType::Text);
+                            match dt {
+                                ColDataType::Text => self.format_text_literal(s),
+                                ColDataType::DateTime => format!("#{}#", s),
+                                ColDataType::Number { .. } | ColDataType::Boolean => {
+                                    if s.is_empty() {
+                                        "NULL".to_string()
+                                    } else {
+                                        s.clone()
+                                    }
+                                }
+                            }
+                        }
+                    })
+                    .collect();
+                let sql = format!("{}({})", insert_prefix, parts.join(", "));
+                conn.execute(&sql, (), None)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -342,7 +684,10 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
 
         let t_total = std::time::Instant::now();
 
-        conn.set_autocommit(false)?;
+        let use_tx = self.supports_transactions();
+        if use_tx {
+            conn.set_autocommit(false)?;
+        }
 
         // Try columnar array binding first (single SQLExecute for all rows).
         // Some drivers (e.g. MS Access) silently ignore SQL_ATTR_PARAMSET_SIZE,
@@ -354,7 +699,14 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             descriptions.push(BindParamDesc::f64(false));
         }
 
-        let columnar_ok = (|| -> Result<bool, TrnSysError> {
+        // Excel's driver mishandles prepared statements on freshly-created
+        // tables (it treats unknown column identifiers as implicit parameter
+        // markers). Skip the columnar path entirely for such dialects and use
+        // direct-SQL literal inserts instead.
+        let columnar_ok: Result<bool, TrnSysError> = if !self.supports_transactions() {
+            Ok(false)
+        } else {
+            (|| -> Result<bool, TrnSysError> {
             let mut prepared = conn.prepare(&query)?;
             {
                 let mut inserter = prepared.column_inserter(n, descriptions)?;
@@ -397,15 +749,20 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
             let rows_affected = prepared.row_count()?.unwrap_or(0);
             debug!("[timer] columnar rows_affected: {} (expected {})", rows_affected, n);
             Ok(rows_affected == n)
-        })();
+            })()
+        };
 
         match columnar_ok {
             Ok(true) => {
                 // Columnar insert succeeded — commit
-                conn.commit()?;
+                if use_tx {
+                    conn.commit()?;
+                }
             }
             _ => {
-                conn.rollback()?;
+                if use_tx {
+                    conn.rollback()?;
+                }
 
                 // Build each row as a comma-separated literal value string.
                 let mut value_rows: Vec<String> = Vec::with_capacity(n);
@@ -419,7 +776,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
                     value_rows.push(vals.join(", "));
                 }
 
-                conn.set_autocommit(false)?;
+                let table_ref = self.format_data_table(table);
                 let result = if self.supports_multi_row_insert() {
                     // Multi-row VALUES: INSERT INTO t (cols) VALUES (...), (...), ...
                     info!("Columnar insert incomplete — falling back to multi-row VALUES");
@@ -429,7 +786,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
                             let body = self.format_multi_row_insert_body(chunk);
                             let sql = format!(
                                 "INSERT INTO {} ({}) {}",
-                                table, col_name_field, body
+                                table_ref, col_name_field, body
                             );
                             if i == 0 {
                                 debug!("[multi-row] first SQL ({} chars): {}", sql.len(), &sql[..sql.len().min(500)]);
@@ -446,7 +803,7 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
                     info!("Columnar insert incomplete — falling back to literal INSERT per row");
                     let insert_prefix = format!(
                         "INSERT INTO {} ({}) VALUES ",
-                        table, col_name_field
+                        table_ref, col_name_field
                     );
                     (|| -> Result<(), TrnSysError> {
                         for row in &value_rows {
@@ -456,15 +813,19 @@ pub trait OdbcProvider<'c>: Send + Sync + SqlDialect {
                         Ok(())
                     })()
                 };
-                if result.is_err() {
-                    let _ = conn.rollback();
-                } else {
-                    conn.commit()?;
+                if use_tx {
+                    if result.is_err() {
+                        let _ = conn.rollback();
+                    } else {
+                        conn.commit()?;
+                    }
                 }
                 result?;
             }
         }
-        conn.set_autocommit(true)?;
+        if use_tx {
+            conn.set_autocommit(true)?;
+        }
 
         debug!(
             "[timer] columnar_batch_insert total ({} rows): {:?}",

@@ -29,6 +29,39 @@ pub trait SqlDialect {
         true
     }
 
+    /// Whether the dialect supports server-side auto-increment for primary keys.
+    /// Excel's ODBC driver does not; callers must generate ids manually.
+    fn supports_autoincrement(&self) -> bool {
+        true
+    }
+
+    /// Whether the driver supports ODBC transactions (autocommit toggling,
+    /// commit/rollback). Excel's driver returns "Optional feature not
+    /// implemented" for SQLSetConnectAttr(SQL_ATTR_AUTOCOMMIT).
+    fn supports_transactions(&self) -> bool {
+        true
+    }
+
+    /// Whether the driver supports row-level DELETE. Jet/Excel's ISAM treats
+    /// its sheets as linked tables and rejects DELETE with
+    /// "Deleting data in a linked table is not supported by this ISAM".
+    /// Callers fall back to DROP+CREATE to wipe state.
+    fn supports_delete(&self) -> bool {
+        true
+    }
+
+    /// Format a text value as an SQL literal (single-quoted, with single quotes doubled).
+    fn format_text_literal(&self, value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+
+    /// Reference a data table in a DML statement. Excel overrides to use the
+    /// `[sheet$]` form because its ODBC driver caches named-range metadata at
+    /// connection time and won't see a table that was CREATEd on this session.
+    fn format_data_table(&self, table_name: &str) -> String {
+        self.format_identifier(table_name)
+    }
+
     /// Dialect hint for how many rows to insert per transaction/chunk.
     /// Defaults to 400 and can be overridden by providers (e.g., MS Access).
     fn preferred_insert_chunk_size(&self) -> usize {
