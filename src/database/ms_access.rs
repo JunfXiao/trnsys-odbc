@@ -11,12 +11,8 @@ pub struct MsAccessProvider<'c> {
 }
 
 impl SqlDialect for MsAccessProvider<'_> {
-    fn get_decimal_type(&self) -> String {
-        "FLOAT".to_string()
-    }
-
-    fn get_boolean_type(&self) -> String {
-        "BIT".to_string()
+    fn get_text_type(&self) -> String {
+        "TEXT".to_string()
     }
 
     fn preferred_insert_chunk_size(&self) -> usize {

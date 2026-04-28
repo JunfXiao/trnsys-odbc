@@ -2,7 +2,7 @@ use crate::database::datatype::{ColDataType, ColDef};
 
 pub trait SqlDialect {
     fn get_text_type(&self) -> String {
-        "TEXT".to_string()
+        "VARCHAR(255)".to_string()
     }
 
     fn get_integer_type(&self) -> String {
@@ -10,11 +10,11 @@ pub trait SqlDialect {
     }
 
     fn get_decimal_type(&self) -> String {
-        "DOUBLE".to_string()
+        "FLOAT".to_string()
     }
 
     fn get_boolean_type(&self) -> String {
-        "BOOLEAN".to_string()
+        "BIT".to_string()
     }
 
     fn get_datetime_type(&self) -> String {
@@ -98,9 +98,10 @@ pub trait SqlDialect {
     }
 
     /// Full column definition for an auto-increment primary key column.
+    /// Default uses SQL Server syntax; SQLite and Access override.
     fn autoincrement_pk_def(&self, col_name: &str) -> String {
         format!(
-            "{} INTEGER PRIMARY KEY AUTOINCREMENT",
+            "{} INTEGER IDENTITY(0, 1) PRIMARY KEY",
             self.format_identifier(col_name)
         )
     }

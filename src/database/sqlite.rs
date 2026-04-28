@@ -21,6 +21,13 @@ impl SqlDialect for SqliteProvider<'_> {
     fn get_boolean_type(&self) -> String {
         "INTEGER".to_string()
     }
+
+    fn autoincrement_pk_def(&self, col_name: &str) -> String {
+        format!(
+            "{} INTEGER PRIMARY KEY AUTOINCREMENT",
+            self.format_identifier(col_name)
+        )
+    }
 }
 
 impl_odbc_provider!(SqliteProvider);

@@ -21,7 +21,7 @@ use tracing_subscriber::{
 };
 
 
-const TRNSYS_LOG_LEVEL: Level = Level::INFO;
+const TRNSYS_LOG_LEVEL: Level = Level::WARN;
 
 
 /// Custom function to handle trnsys logging.

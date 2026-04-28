@@ -1,6 +1,6 @@
 # trnsys-odbc
 
-Store TrnSys Simulation Results in MS Excel, MS Access, SQLite and more ODBC Databases.
+Store TrnSys Simulation Results in MS Excel, MS Access, SQLite, SQL Server, PostgreSQL and more ODBC Databases.
 
 ## Supported Databases
 
@@ -8,14 +8,13 @@ Store TrnSys Simulation Results in MS Excel, MS Access, SQLite and more ODBC Dat
 
 - Microsoft Access
 - Microsoft Excel
+- Microsoft SQL Server
 - SQLite
 - PostgreSQL
 
 ### Theoretical Support
 
-
-- Microsoft SQL Server
-- All other ODBC-compliant databases
+- All other ODBC-compliant databases (via `ConnectionString` mode)
 
 ## Usage
 
@@ -36,7 +35,7 @@ Install the ODBC driver for the database you want to connect to.
 | No | Name             | Description                                                                                                                                                                                                  | Default |
 |----|------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
 | 1  | `PrintInterval`  | Interval to print simulation results to the database.                                                                                                                                                        | 1       |
-| 2  | `DriverMode`     | Integer between 1 and 5. Driver Mode determines how to write the data to the database. <br> MsAccessFile = 1, <br> MsExcelFile = 2, <br> SqliteFile = 3, <br> ODBC Connection String = 4 <br> PostgreSQL = 5 | 1       |
+| 2  | `DriverMode`     | Integer between 1 and 6. Driver Mode determines how to write the data to the database. <br> MsAccessFile = 1, <br> MsExcelFile = 2, <br> SqliteFile = 3, <br> ODBC Connection String = 4, <br> PostgreSQL = 5, <br> SQL Server = 6 | 1       |
 | 3  | `NumberOfInputs` | Number of inputs connected to this component.                                                                                                                                                                | 3       |
 
 ### Special Cards / Labels
@@ -47,7 +46,7 @@ should be written as `"My Database"`.
 | No | Name                | Description                                                                                                                                                                                 |
 |----|---------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | 1  | `Labels`            | Please do not edit this. This is used to store the number of labels.                                                                                                                        |
-| 2  | `Connection String` | If `DriverMode` is 4 or 5, then this card is used to store the connection string. If the file-based database is used (mode 1-3), then the connection string should be the path to the file. |
+| 2  | `Connection String` | If `DriverMode` is 4, 5, or 6, then this card is used to store the connection string. If the file-based database is used (mode 1-3), then the connection string should be the path to the file. |
 | 3  | `Table Name`        | Name of the table to write the data.                                                                                                                                                        |
 | 4  | `Variant Name`      | Name of the variant to write the data. At the beginning of the simulation, **all data** with the same variant name will be **deleted** from the table.                                      |
 | 5+ | `Input Names`       | The name of all columns, one by one, each wrapped by double quotation marks.                                                                                                                |
@@ -84,6 +83,49 @@ LABELS 6
 col1 "some col2" "another col3"
 *------------------------------------------------------------------------------
 ```
+
+## Database Schema
+
+The component creates two tables in the database:
+
+### `variants` (lookup table)
+
+Tracks simulation variants. Auto-created on first use.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `variant_id` | Auto-increment integer (PK) | Unique ID, starting from 0 |
+| `variant_name` | Text | The variant name from Label 4 |
+| `complete` | Boolean | `false` during simulation, `true` when finished |
+| `created_at` | DateTime | When the variant was first created |
+| `updated_at` | DateTime | When the variant was last used |
+
+### `<Table Name>` (data table)
+
+Stores the simulation output data. Named by Label 3.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `variant_id` | Integer | References `variants.variant_id` |
+| `SimTime` | Float | Simulation timestep |
+| _Input columns_ | Float | One column per input (named by Labels 5+) |
+
+An index on `variant_id` is created automatically for fast queries and cleanup.
+
+At the start of each simulation, all existing data rows for the variant are deleted and re-inserted.
+
+### Dialect Compatibility
+
+| | SQL Server | MS Access | SQLite | PostgreSQL |
+|---|---|---|---|---|
+| DriverMode | 6 | 1 | 3 | 5 |
+| Text | `NVARCHAR(255)` | `TEXT` | `VARCHAR(255)` | `VARCHAR(255)` |
+| Integer | `INT` | `INTEGER` | `INTEGER` | `INTEGER` |
+| Float | `FLOAT` | `FLOAT` | `REAL` | `DOUBLE PRECISION` |
+| Boolean | `BIT` | `BIT` | `INTEGER` | `BOOLEAN` |
+| DateTime | `DATETIME2` | `DATETIME` | `DATETIME` | `TIMESTAMP` |
+| Identifiers | `[name]` | `[name]` | `[name]` | `"name"` |
+| Multi-row INSERT | Yes (VALUES) | No (per-row) | Yes (VALUES) | Yes (VALUES) |
 
 ## FAQ
 

@@ -13,6 +13,7 @@ pub enum DriverMode {
     SqliteFile = 3,
     ConnectionString = 4,
     Postgres = 5,
+    SqlServer = 6,
 }
 
 #[derive(Debug, Clone)]

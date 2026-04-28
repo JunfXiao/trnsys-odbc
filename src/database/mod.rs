@@ -5,6 +5,7 @@ pub mod ms_access;
 pub mod ms_excel;
 pub mod odbc;
 pub mod postgres;
+pub mod sql_server;
 pub mod sqlite;
 pub mod template;
 

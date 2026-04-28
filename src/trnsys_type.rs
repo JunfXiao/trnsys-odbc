@@ -5,6 +5,7 @@ use crate::database::ms_access::MsAccessProvider;
 use crate::database::ms_excel::MsExcelProvider;
 use crate::database::odbc::{FileDbProvider, OdbcProvider, OdbcProviderImpl};
 use crate::database::postgres::PostgreSQLProvider;
+use crate::database::sql_server::SqlServerProvider;
 use crate::database::sqlite::SqliteProvider;
 use crate::parameter::{DriverMode, Parameters};
 use crate::trnsys::error::TrnSysError;
@@ -171,6 +172,15 @@ impl TrnSysType {
             }
             DriverMode::Postgres => {
                 let mut db_provider = PostgreSQLProvider::new();
+                db_provider.setup_by_conn_str(
+                    &ENVIRONMENT,
+                    params.connection_string.as_str(),
+                    None,
+                )?;
+                Box::new(db_provider)
+            }
+            DriverMode::SqlServer => {
+                let mut db_provider = SqlServerProvider::new();
                 db_provider.setup_by_conn_str(
                     &ENVIRONMENT,
                     params.connection_string.as_str(),

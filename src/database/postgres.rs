@@ -21,6 +21,10 @@ impl SqlDialect for PostgreSQLProvider<'_> {
     }
 
     // PostgreSQL uses double quotes for identifiers, not square brackets
+    fn get_boolean_type(&self) -> String {
+        "BOOLEAN".to_string()
+    }
+
     fn format_identifier(&self, identifier: &str) -> String {
         format!("\"{}\"", identifier.replace("\"", "\"\""))
     }
